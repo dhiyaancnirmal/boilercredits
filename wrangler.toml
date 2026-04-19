@@ -1,0 +1,50 @@
+name = "boilercredits"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+routes = [
+  { pattern = "boilercredits.xyz", custom_domain = true },
+  { pattern = "www.boilercredits.xyz", custom_domain = true }
+]
+
+[assets]
+directory = "./dist/public"
+
+[vars]
+ENVIRONMENT = "production"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "boilercredits"
+database_id = "e2abb827-a3a6-4d8a-9dc2-cc7ee750f046"
+
+[[queues.producers]]
+queue = "boilercredits-refresh"
+binding = "HYDRATION_QUEUE"
+
+[[queues.consumers]]
+queue = "boilercredits-refresh"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Local development: run with `wrangler dev --env dev`
+[env.dev]
+vars = { ENVIRONMENT = "development" }
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "boilercredits"
+
+[[env.dev.queues.producers]]
+queue = "boilercredits-refresh"
+binding = "HYDRATION_QUEUE"
+
+[[env.dev.queues.consumers]]
+queue = "boilercredits-refresh"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5

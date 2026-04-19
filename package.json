@@ -1,0 +1,52 @@
+{
+  "name": "boilercredits",
+  "version": "2.0.0",
+  "description": "Fast Purdue transfer-credit lookup service built on Cloudflare Workers and Preact",
+  "main": "src/index.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhiyaancnirmal/boilercredits.git"
+  },
+  "homepage": "https://github.com/dhiyaancnirmal/boilercredits",
+  "bugs": {
+    "url": "https://github.com/dhiyaancnirmal/boilercredits/issues"
+  },
+  "scripts": {
+    "dev": "concurrently \"wrangler dev --env dev --port 8787\" \"vite --config vite.config.ts\"",
+    "dev:api": "wrangler dev --env dev --port 8787",
+    "dev:web": "vite --config vite.config.ts",
+    "build": "vite build --config vite.config.ts",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts"
+  },
+  "keywords": [
+    "purdue",
+    "transfer-credit",
+    "cloudflare-workers",
+    "hono",
+    "preact"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "hono": "^4.12.10",
+    "preact": "^10.29.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260402.1",
+    "@preact/preset-vite": "^2.10.5",
+    "@testing-library/preact": "^3.2.4",
+    "@types/node": "^25.5.0",
+    "concurrently": "^9.2.1",
+    "jsdom": "^29.0.1",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3",
+    "vitest": "^4.1.2",
+    "wrangler": "^4.80.0",
+    "zimmerframe": "^1.1.4"
+  }
+}
