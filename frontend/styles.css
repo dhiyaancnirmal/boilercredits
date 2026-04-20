@@ -28,6 +28,30 @@
   --ease-out: cubic-bezier(.16, 1, .3, 1);
 }
 
+:root[data-theme="light"] {
+  --bg: oklch(95% 0.01 78);
+  --bg-elevated: oklch(98% 0.006 78);
+  --bg-surface: oklch(100% 0.003 78);
+  --bg-input: oklch(99% 0.004 78);
+  --border: oklch(84% 0.014 78);
+  --border-strong: oklch(72% 0.024 78);
+  --border-focus: oklch(54% 0.09 76);
+  --text: oklch(26% 0.018 76);
+  --text-secondary: oklch(43% 0.02 76);
+  --text-muted: oklch(57% 0.018 76);
+  --accent: oklch(52% 0.09 76);
+  --accent-hover: oklch(45% 0.1 76);
+  --accent-dim: oklch(52% 0.09 76 / 0.08);
+  --accent-soft: oklch(52% 0.09 76 / 0.14);
+  --on-accent: oklch(99% 0.003 78);
+  --error: oklch(58% 0.17 28);
+  --scrim: oklch(95% 0.01 78 / 0.88);
+  --shadow-color: oklch(30% 0.02 76 / 0.10);
+  --hover-soft: oklch(28% 0.02 76 / 0.05);
+  --hover-softer: oklch(28% 0.02 76 / 0.025);
+  --accent-border: oklch(52% 0.09 76 / 0.24);
+}
+
 *, *::before, *::after {
   margin: 0;
   padding: 0;
@@ -40,6 +64,10 @@ html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   scrollbar-gutter: stable;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
 }
 
 :where(a, button, input, select):focus-visible {
@@ -182,27 +210,46 @@ a {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--text-muted);
+  transition:
+    color 0.15s,
+    background-color 0.15s;
 }
 
 .help-btn {
   background: none;
   border: none;
-  color: var(--text-muted);
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  padding: 4px;
-  transition: color 0.15s;
 }
 
-.help-btn:hover {
+.icon-btn:hover {
   color: var(--accent);
+  background: var(--hover-soft);
 }
 
-.help-btn svg {
+.icon-btn svg {
   width: 20px;
   height: 20px;
+}
+
+.theme-btn {
+  color: var(--text-secondary);
+}
+
+.theme-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .nav-link {
@@ -1285,14 +1332,7 @@ select:disabled,
 }
 
 .github-link {
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  transition: color 0.15s;
-}
-
-.github-link:hover {
-  color: var(--accent);
+  flex-shrink: 0;
 }
 
 @media (max-width: 720px) {

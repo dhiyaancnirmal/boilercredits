@@ -30,6 +30,7 @@ import {
 } from "./lib/undistributed-codes";
 
 type Tab = "schools" | "courses" | "saved" | "changelog";
+type Theme = "dark" | "light";
 
 type ForwardSelection = {
   id: string;
@@ -100,6 +101,7 @@ const PURDUE_SEARCH_HINTS = [
   "Calculus",
 ];
 const APP_VERSION = "v2.0.1";
+const THEME_STORAGE_KEY = "bc-theme";
 const CHANGELOG_ENTRIES = [
   {
     version: APP_VERSION,
@@ -140,6 +142,12 @@ function parseInitialTab(): Tab {
   if (part === "courses" || part === "reverse" || part === "purdue-credit") return "courses";
   if (part === "schools" || part === "forward") return "schools";
   return "schools";
+}
+
+function getInitialTheme(): Theme {
+  const saved = localStorage.getItem(THEME_STORAGE_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
 type HashRestore =
@@ -921,6 +929,7 @@ function WelcomeModal({
 
 function App() {
   const isMobile = useIsMobile();
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [showWelcome, setShowWelcome] = useState(
     () => !localStorage.getItem("bc-welcome-dismissed") && !window.location.hash
   );
@@ -986,9 +995,20 @@ function App() {
     hashRestore.current = parseHashRestore();
   }, []);
 
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    const themeMeta = document.querySelector("meta[name='theme-color']");
+    themeMeta?.setAttribute("content", theme === "light" ? "#f6f0e6" : "#09090b");
+  }, [theme]);
+
   useEffect(() => {
     saveRows(savedRows);
   }, [savedRows]);
+
+  useEffect(() => {
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
   // Keep URL hash in sync with current tab + selection. pushState for user-driven
   // changes (so browser back/forward restore previous tab); replaceState for the
@@ -1446,7 +1466,32 @@ function App() {
             <span class="logo-text">BoilerCredits</span>
           </a>
           <div class="header-actions">
-            <button class="help-btn" type="button" aria-label="About BoilerCredits" onClick={() => setShowWelcome(true)}>
+            <button
+              class="icon-btn help-btn theme-btn"
+              type="button"
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+            >
+              {theme === "dark" ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2" />
+                  <path d="M12 20v2" />
+                  <path d="m4.93 4.93 1.41 1.41" />
+                  <path d="m17.66 17.66 1.41 1.41" />
+                  <path d="M2 12h2" />
+                  <path d="M20 12h2" />
+                  <path d="m6.34 17.66-1.41 1.41" />
+                  <path d="m19.07 4.93-1.41 1.41" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3a7 7 0 1 0 9 9 9 9 0 1 1-9-9z" />
+                </svg>
+              )}
+            </button>
+            <button class="icon-btn help-btn" type="button" aria-label="About BoilerCredits" onClick={() => setShowWelcome(true)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10" />
                 <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
@@ -1455,7 +1500,7 @@ function App() {
             </button>
             <a
               href={REPO_URL}
-              class="github-link"
+              class="icon-btn github-link"
               target="_blank"
               rel="noopener"
               aria-label="GitHub Repository"
