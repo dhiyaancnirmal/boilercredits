@@ -1,6 +1,7 @@
 import type { CacheEntry, RefreshJob } from "../types";
 
 const memoryCache = new Map<string, CacheEntry<unknown>>();
+const MAX_MEMORY_CACHE_KEYS = 500;
 
 /** Clear the module-level memory cache. For test isolation only. */
 export function __clearMemoryCacheForTests(): void {
@@ -43,6 +44,17 @@ function cacheState<T>(
   };
 }
 
+function setMemoryCache<T>(key: string, entry: CacheEntry<T>): void {
+  memoryCache.set(key, entry as CacheEntry<unknown>);
+
+  if (memoryCache.size <= MAX_MEMORY_CACHE_KEYS) return;
+
+  const oldestKey = memoryCache.keys().next().value;
+  if (oldestKey !== undefined) {
+    memoryCache.delete(oldestKey);
+  }
+}
+
 export async function getCached<T>(
   kv: KVNamespace | undefined,
   db: D1Database | undefined,
@@ -65,7 +77,7 @@ export async function setCache<T>(
     expiresAt: Date.now() + ttlSeconds * 1000,
   };
 
-  memoryCache.set(key, entry as CacheEntry<unknown>);
+  setMemoryCache(key, entry);
 
   if (kv) {
     await kv.put(`cache:${key}`, JSON.stringify(entry), {
@@ -122,14 +134,20 @@ export async function getCachedWithMetadata<T>(
 ): Promise<CacheLookup<T>> {
   const inMemory = memoryCache.get(key) as CacheEntry<T> | undefined;
   if (inMemory) {
-    return cacheState(inMemory.data, inMemory.expiresAt, "memory");
+    const state = cacheState(inMemory.data, inMemory.expiresAt, "memory");
+    if (!state.stale) return state;
+    memoryCache.delete(key);
   }
 
   if (kv) {
     const raw = await kv.get(`cache:${key}`);
     if (raw) {
       const entry: CacheEntry<T> = JSON.parse(raw);
-      return cacheState(entry.data, entry.expiresAt, "kv");
+      const state = cacheState(entry.data, entry.expiresAt, "kv");
+      if (!state.stale) {
+        setMemoryCache(key, entry);
+        return state;
+      }
     }
   }
 
@@ -143,7 +161,7 @@ export async function getCachedWithMetadata<T>(
 
     if (row) {
       const data = JSON.parse(row.payload_json) as T;
-      memoryCache.set(key, {
+      setMemoryCache(key, {
         data,
         expiresAt: row.expires_at,
       });

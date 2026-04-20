@@ -89,6 +89,43 @@ describe("cache metadata", () => {
     expect(cached.source).toBe("d1-stale");
     expect(cached.data).toEqual({ rows: [{ id: 1 }] });
   });
+
+  it("does not let stale memory shadow a fresher D1 value", async () => {
+    const { db, materialized } = createFakeD1();
+    const key = "school-equivalencies:US:IN:001816";
+    const now = Date.now();
+
+    materialized.set(key, {
+      payload_json: JSON.stringify({ rows: [{ id: 1 }] }),
+      expires_at: now - 1_000,
+      updated_at: now - 2_000,
+    });
+
+    const stale = await getCachedWithMetadata<{ rows: Array<{ id: number }> }>(
+      undefined,
+      db,
+      key
+    );
+
+    expect(stale.stale).toBe(true);
+    expect(stale.source).toBe("d1-stale");
+
+    materialized.set(key, {
+      payload_json: JSON.stringify({ rows: [{ id: 2 }] }),
+      expires_at: now + 60_000,
+      updated_at: now,
+    });
+
+    const fresh = await getCachedWithMetadata<{ rows: Array<{ id: number }> }>(
+      undefined,
+      db,
+      key
+    );
+
+    expect(fresh.stale).toBe(false);
+    expect(fresh.source).toBe("d1");
+    expect(fresh.data).toEqual({ rows: [{ id: 2 }] });
+  });
 });
 
 describe("warm materialization seeding", () => {

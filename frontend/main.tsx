@@ -99,10 +99,19 @@ const PURDUE_SEARCH_HINTS = [
   "CS",
   "Calculus",
 ];
-const APP_VERSION = "v2.0.0";
+const APP_VERSION = "v2.0.1";
 const CHANGELOG_ENTRIES = [
   {
     version: APP_VERSION,
+    date: "April 20, 2026",
+    changes: [
+      "Added credit sorting for course equivalencies.",
+      "Removed outbound transfer lookup after confirming Purdue does not publish real outbound transfer data.",
+      "Kept the Schools and Courses flows focused on the supported inbound-equivalency dataset.",
+    ],
+  },
+  {
+    version: "v2.0.0",
     date: "April 19, 2026",
     changes: [
       "Initial public launch of BoilerCredits.",
@@ -441,6 +450,8 @@ function StatusPill({
   status: string;
   loading?: boolean;
 }) {
+  if (!status.trim() && !loading) return null;
+
   const { label, time } = splitStatus(status);
 
   return (
@@ -463,6 +474,10 @@ function useIsMobile(breakpoint = 640): boolean {
     return () => mql.removeEventListener("change", handler);
   }, [breakpoint]);
   return mobile;
+}
+
+function courseDisplayCode(subject: string, course: string): string {
+  return `${subject} ${course}`;
 }
 
 function SearchHintTicker({
@@ -1610,7 +1625,9 @@ function App() {
                       <div class="selected-name">
                         {renderCourseCode(selectedCourse.subject, selectedCourse.course)}
                       </div>
-                      <div class="course-title" style={{ marginTop: "4px" }}>{selectedCourse.title}</div>
+                      {selectedCourse.title !== courseDisplayCode(selectedCourse.subject, selectedCourse.course) && (
+                        <div class="course-title" style={{ marginTop: "4px" }}>{selectedCourse.title}</div>
+                      )}
                     </div>
                   </div>
 

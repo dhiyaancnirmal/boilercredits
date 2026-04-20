@@ -1488,7 +1488,17 @@ select:disabled,
 
   .browse-meta {
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 10px;
+  }
+
+  .browse-meta > .browse-loading {
+    width: 100%;
+    justify-content: flex-start;
+    min-height: 30px;
+    padding-inline: 12px;
+    border-radius: var(--radius);
+    font-size: 0.82rem;
+    background: color-mix(in srgb, var(--bg-elevated) 86%, var(--accent) 4%);
   }
 
   .browse-search-input::placeholder {
@@ -1518,9 +1528,37 @@ select:disabled,
   }
 
   .browse-controls {
-    margin-left: auto;
-    flex-wrap: wrap;
-    gap: 8px;
+    margin-left: 0;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .browse-controls > .filter-select,
+  .browse-controls > .filter-badge {
+    min-width: 0;
+  }
+
+  .browse-controls > .filter-select {
+    width: 100%;
+    height: 36px;
+    padding-inline: 12px 32px;
+    border-radius: var(--radius);
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: var(--text);
+    background-color: color-mix(in srgb, var(--bg-elevated) 88%, var(--accent) 4%);
+    background-position: right 12px center;
+  }
+
+  .browse-controls > .filter-badge {
+    min-height: 36px;
+    justify-content: center;
+    text-align: center;
+    padding-inline: 12px;
+    border-radius: var(--radius);
+    font-size: 0.84rem;
   }
 
   .browse-controls:has(.xcodes-toggle) {
