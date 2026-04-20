@@ -43,7 +43,6 @@ export interface EquivalencySearchResult {
 }
 
 export type RefreshKind =
-  | "outbound-schools"
   | "all-schools"
   | "states"
   | "schools"
@@ -60,7 +59,6 @@ export type RefreshKind =
   | "search"
   | "reverse-search"
   | "school-equivalencies"
-  | "school-outbound-equivalencies"
   | "purdue-catalog"
   | "purdue-course-equivalencies";
 
@@ -94,18 +92,6 @@ export interface SchoolEquivalenciesResponse {
   subjects: Array<{ code: string; name: string }>;
   rows: EquivalencyRow[];
   counts: { subjects: number; equivalencies: number };
-}
-
-/** Reverse-report rows aggregated for a destination school (Purdue → this school). */
-export interface SchoolOutboundEquivalenciesResponse {
-  school: { id: string; state: string; name: string };
-  rows: EquivalencyRow[];
-  counts: {
-    equivalencies: number;
-    catalogCourses: number;
-    coursesWithCache: number;
-    coursesMissingCache: number;
-  };
 }
 
 export interface PurdueCatalogResponse {

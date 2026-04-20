@@ -1,15 +1,12 @@
 import type {
   EquivalencyRow,
   SchoolEquivalenciesResponse,
-  SchoolOutboundEquivalenciesResponse,
   PurdueCatalogResponse,
   PurdueCourseEquivalenciesResponse,
   PurdueDestination,
   InstitutionSubregion,
-  RefreshJob,
 } from "../types";
 import {
-  fetchStates,
   fetchSchools,
   fetchSubjects,
   fetchCourses,
@@ -30,9 +27,7 @@ import {
   parseEquivalencyReport,
 } from "./purdue-parser";
 import { getCached, getCachedWithMetadata, setCache, makeCacheKey } from "../lib/cache";
-import { createRefreshJob, dispatchRefreshJobsNow } from "../lib/refresh-job";
 import { PURDUE_COURSE_DESTINATIONS_TTL_SECONDS } from "../lib/refresh";
-import { toPurdueSchoolLocationParam } from "../lib/purdue-location";
 
 function dedupeRows(rows: EquivalencyRow[]): EquivalencyRow[] {
   const seen = new Map<string, EquivalencyRow>();
@@ -130,176 +125,28 @@ function normalizeInstitutionKey(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-export interface OutboundSchoolDirectoryEntry {
-  name: string;
-  id: string;
-  state: string;
-  catalog: "US" | "International";
-}
-
-export type PurdueCourseDirectoryDirection = "inbound" | "outbound";
-
-async function getCachedPurdueCatalogMap(
+export async function buildPurdueCourseDirectory(
   env: { CACHE?: KVNamespace; DB?: D1Database }
-): Promise<Map<string, PurdueCatalogResponse["courses"][number]>> {
-  const cacheKey = makeCacheKey("purdue-catalog");
-  const cached = await getCachedWithMetadata<PurdueCatalogResponse>(env.CACHE, env.DB, cacheKey);
-  const courses = cached.data?.courses?.length ? cached.data.courses : (await buildPurdueCatalog()).courses;
-  return new Map(courses.map((course) => [`${course.subject}:${course.course}`, course]));
-}
-
-async function getCachedPurdueEquivalencyTitleMap(
-  env: { CACHE?: KVNamespace; DB?: D1Database }
-): Promise<Map<string, string>> {
-  if (!env.DB) return new Map();
+): Promise<PurdueCatalogResponse["courses"]> {
+  if (!env.DB) return [];
 
   const eqRows = await runD1All<{ payload_json: string }>(
     env.DB,
     "SELECT payload_json FROM materialized_responses WHERE cache_key LIKE 'purdue-course-equivalencies:%'"
   );
 
-  const titles = new Map<string, string>();
-  for (const row of eqRows) {
-    const payload = coercePurdueCourseEquivalenciesResponse(
-      JSON.parse(row.payload_json) as PurdueCourseEquivalenciesResponse
-    );
-    if (!payload.course.title) continue;
-    titles.set(`${payload.course.subject}:${payload.course.course}`, payload.course.title);
-  }
-
-  return titles;
-}
-
-async function getCachedSchoolDirectory(
-  env: { CACHE?: KVNamespace; DB?: D1Database },
-  catalog: "US" | "International"
-): Promise<OutboundSchoolDirectoryEntry[]> {
-  const cacheKey = makeCacheKey("all-schools", toPurdueSchoolLocationParam(catalog));
-  const cached = await getCachedWithMetadata<Array<{ name: string; id: string; state: string }>>(
-    env.CACHE,
-    env.DB,
-    cacheKey
-  );
-
-  return (cached.data ?? []).map((school) => ({ ...school, catalog }));
-}
-
-function buildSchoolLookupIndex(
-  schools: OutboundSchoolDirectoryEntry[]
-): Map<string, OutboundSchoolDirectoryEntry> {
-  const index = new Map<string, OutboundSchoolDirectoryEntry>();
-
-  for (const school of schools) {
-    const stateKey = normalizeInstitutionKey(`${school.name} - ${school.state}`);
-    const bareKey = normalizeInstitutionKey(school.name);
-
-    if (!index.has(stateKey)) index.set(stateKey, school);
-    if (!index.has(bareKey)) index.set(bareKey, school);
-  }
-
-  return index;
-}
-
-export async function buildOutboundSchoolDirectory(
-  env: { CACHE?: KVNamespace; DB?: D1Database }
-): Promise<OutboundSchoolDirectoryEntry[]> {
-  if (!env.DB) return [];
-
-  const [usSchools, intlSchools, eqRows] = await Promise.all([
-    getCachedSchoolDirectory(env, "US"),
-    getCachedSchoolDirectory(env, "International"),
-    runD1All<{ payload_json: string }>(
-      env.DB,
-      "SELECT payload_json FROM materialized_responses WHERE cache_key LIKE 'purdue-course-equivalencies:%'"
-    ),
-  ]);
-
-  const schoolIndex = buildSchoolLookupIndex([...usSchools, ...intlSchools]);
-  const deduped = new Map<string, OutboundSchoolDirectoryEntry>();
-
-  for (const row of eqRows) {
-    const payload = coercePurdueCourseEquivalenciesResponse(
-      JSON.parse(row.payload_json) as PurdueCourseEquivalenciesResponse
-    );
-
-    for (const [institutionName, subregion] of Object.entries(payload.institutionStates)) {
-      const school =
-        schoolIndex.get(normalizeInstitutionKey(`${institutionName} - ${subregion.code}`)) ??
-        schoolIndex.get(normalizeInstitutionKey(institutionName));
-
-      if (!school) continue;
-
-      const key = `${school.catalog}:${school.state}:${school.id}`;
-      if (!deduped.has(key)) {
-        deduped.set(key, school);
-      }
-    }
-  }
-
-  return [...deduped.values()].sort((a, b) => {
-    if (a.catalog !== b.catalog) return a.catalog === "US" ? -1 : 1;
-    return a.name.localeCompare(b.name) || a.state.localeCompare(b.state);
-  });
-}
-
-export async function buildPurdueCourseDirectory(
-  env: { CACHE?: KVNamespace; DB?: D1Database },
-  direction: PurdueCourseDirectoryDirection
-): Promise<PurdueCatalogResponse["courses"]> {
-  if (!env.DB) return [];
-
-  if (direction === "inbound") {
-    const eqRows = await runD1All<{ payload_json: string }>(
-      env.DB,
-      "SELECT payload_json FROM materialized_responses WHERE cache_key LIKE 'purdue-course-equivalencies:%'"
-    );
-
-    const deduped = new Map<string, PurdueCatalogResponse["courses"][number]>();
-    for (const row of eqRows) {
-      const payload = coercePurdueCourseEquivalenciesResponse(
-        JSON.parse(row.payload_json) as PurdueCourseEquivalenciesResponse
-      );
-      if (!payload.rows.length) continue;
-      const key = `${payload.course.subject}:${payload.course.course}`;
-      if (!deduped.has(key)) {
-        deduped.set(key, {
-          subject: payload.course.subject,
-          course: payload.course.course,
-          title: payload.course.title,
-        });
-      }
-    }
-
-    return [...deduped.values()].sort((a, b) => {
-      if (a.subject !== b.subject) return a.subject.localeCompare(b.subject);
-      return a.course.localeCompare(b.course);
-    });
-  }
-
-  const [equivalencyTitlesByKey, catalogByKey] = await Promise.all([
-    getCachedPurdueEquivalencyTitleMap(env),
-    getCachedPurdueCatalogMap(env),
-  ]);
-  const destRows = await runD1All<{ cache_key: string; payload_json: string }>(
-    env.DB,
-    "SELECT cache_key, payload_json FROM materialized_responses WHERE cache_key LIKE 'purdue-course-destinations:%'"
-  );
-
   const deduped = new Map<string, PurdueCatalogResponse["courses"][number]>();
-  for (const row of destRows) {
-    const destinations = JSON.parse(row.payload_json) as PurdueDestination[];
-    if (!destinations.length) continue;
-
-    const [, subject = "", course = ""] = row.cache_key.split(":");
-    if (!subject || !course) continue;
-
-    const key = `${subject}:${course}`;
+  for (const row of eqRows) {
+    const payload = coercePurdueCourseEquivalenciesResponse(
+      JSON.parse(row.payload_json) as PurdueCourseEquivalenciesResponse
+    );
+    if (!payload.rows.length) continue;
+    const key = `${payload.course.subject}:${payload.course.course}`;
     if (!deduped.has(key)) {
-      const catalogCourse = catalogByKey.get(key);
       deduped.set(key, {
-        subject,
-        course,
-        title: equivalencyTitlesByKey.get(key) ?? catalogCourse?.title ?? `${subject} ${course}`,
+        subject: payload.course.subject,
+        course: payload.course.course,
+        title: payload.course.title,
       });
     }
   }
@@ -308,11 +155,6 @@ export async function buildPurdueCourseDirectory(
     if (a.subject !== b.subject) return a.subject.localeCompare(b.subject);
     return a.course.localeCompare(b.course);
   });
-}
-
-interface D1DestinationCacheIndex {
-  existingDestinationKeys: Set<string>;
-  matchingEquivalencyKeys: Set<string>;
 }
 
 async function runD1All<T>(
@@ -342,182 +184,6 @@ async function runD1All<T>(
   }
 
   return [];
-}
-
-function equivalencyCacheKeyFromDestinationKey(cacheKey: string): string {
-  return cacheKey.replace(/^purdue-course-destinations:/, "purdue-course-equivalencies:");
-}
-
-async function getD1DestinationCacheIndex(
-  db: D1Database,
-  schoolId: string
-): Promise<D1DestinationCacheIndex> {
-  const existing = await runD1All<{ cache_key: string }>(
-    db,
-    "SELECT cache_key FROM materialized_responses WHERE cache_key LIKE 'purdue-course-destinations:%'"
-  );
-
-  const matching = await runD1All<{ cache_key: string }>(
-    db,
-    "SELECT cache_key FROM materialized_responses WHERE cache_key LIKE 'purdue-course-destinations:%' AND payload_json LIKE ?1",
-    `%\"id\":\"${schoolId}\"%`
-  );
-
-  return {
-    existingDestinationKeys: new Set(existing.map((row) => row.cache_key)),
-    matchingEquivalencyKeys: new Set(
-      matching.map((row) => equivalencyCacheKeyFromDestinationKey(row.cache_key))
-    ),
-  };
-}
-
-/**
- * Aggregate reverse equivalency rows across the Purdue catalog where the destination
- * institution matches the selected school (cached per-course data only; missing
- * courses enqueue `purdue-course-equivalencies` refresh jobs).
- */
-export async function buildSchoolOutboundEquivalencies(
-  schoolId: string,
-  state: string,
-  location: string,
-  env?: { CACHE?: KVNamespace; DB?: D1Database; HYDRATION_QUEUE?: Queue<RefreshJob> }
-): Promise<SchoolOutboundEquivalenciesResponse> {
-  const schoolName = await resolveSchoolName(schoolId, state, location, env);
-
-  const targetKeys = new Set<string>([
-    normalizeInstitutionKey(schoolName),
-    normalizeInstitutionKey(`${schoolName} - ${state}`),
-  ]);
-
-  const catalogCacheKey = makeCacheKey("purdue-catalog");
-  let catalog: PurdueCatalogResponse | null = null;
-  if (env) {
-    const catalogLookup = await getCachedWithMetadata<PurdueCatalogResponse>(
-      env.CACHE,
-      env.DB,
-      catalogCacheKey
-    );
-    catalog = catalogLookup.data;
-  }
-  if (!catalog) {
-    catalog = await buildPurdueCatalog();
-  }
-
-  const allRows: EquivalencyRow[] = [];
-  let coursesWithCache = 0;
-  let coursesMissingCache = 0;
-  const pendingJobs = new Map<string, RefreshJob>();
-
-  const cacheEnv = env?.DB ? env : null;
-  const d1DestinationIndex = cacheEnv?.DB
-    ? await getD1DestinationCacheIndex(cacheEnv.DB, schoolId)
-    : null;
-
-  if (cacheEnv && d1DestinationIndex) {
-    for (const { subject, course } of catalog.courses) {
-      const destKey = makeCacheKey("purdue-course-destinations", subject, course);
-      if (d1DestinationIndex.existingDestinationKeys.has(destKey)) continue;
-
-      coursesMissingCache++;
-      pendingJobs.set(
-        destKey,
-        createRefreshJob(
-          "purdue-course-destinations",
-          destKey,
-          { subject, course },
-          PURDUE_COURSE_DESTINATIONS_TTL_SECONDS
-        )
-      );
-    }
-
-    for (const eqKey of d1DestinationIndex.matchingEquivalencyKeys) {
-      const [, subject = "", course = ""] = eqKey.split(":");
-      const lookup = await getCachedWithMetadata<PurdueCourseEquivalenciesResponse>(
-        cacheEnv.CACHE,
-        cacheEnv.DB,
-        eqKey
-      );
-
-      if (!lookup.data) {
-        coursesMissingCache++;
-        pendingJobs.set(
-          eqKey,
-          createRefreshJob("purdue-course-equivalencies", eqKey, { subject, course }, 86400)
-        );
-        continue;
-      }
-
-      coursesWithCache++;
-      for (const row of lookup.data.rows) {
-        if (!row.transferInstitution) continue;
-        if (targetKeys.has(normalizeInstitutionKey(row.transferInstitution))) {
-          allRows.push(row);
-        }
-      }
-    }
-
-    const rows = dedupeRows(allRows);
-
-    await dispatchRefreshJobsNow(cacheEnv, [...pendingJobs.values()]);
-
-    return {
-      school: { id: schoolId, state, name: schoolName },
-      rows,
-      counts: {
-        equivalencies: rows.length,
-        catalogCourses: catalog.courses.length,
-        coursesWithCache,
-        coursesMissingCache,
-      },
-    };
-  }
-
-  for (const { subject, course } of catalog.courses) {
-    const eqKey = makeCacheKey("purdue-course-equivalencies", subject, course);
-
-    if (!env) {
-      coursesMissingCache++;
-      continue;
-    }
-
-    const lookup = await getCachedWithMetadata<PurdueCourseEquivalenciesResponse>(
-      env.CACHE,
-      env.DB,
-      eqKey
-    );
-
-    if (!lookup.data) {
-      coursesMissingCache++;
-      pendingJobs.set(
-        eqKey,
-        createRefreshJob("purdue-course-equivalencies", eqKey, { subject, course }, 86400)
-      );
-      continue;
-    }
-
-    coursesWithCache++;
-    for (const row of lookup.data.rows) {
-      if (!row.transferInstitution) continue;
-      if (targetKeys.has(normalizeInstitutionKey(row.transferInstitution))) {
-        allRows.push(row);
-      }
-    }
-  }
-
-  const rows = dedupeRows(allRows);
-
-  await dispatchRefreshJobsNow(env ?? {}, [...pendingJobs.values()]);
-
-  return {
-    school: { id: schoolId, state, name: schoolName },
-    rows,
-    counts: {
-      equivalencies: rows.length,
-      catalogCourses: catalog.courses.length,
-      coursesWithCache,
-      coursesMissingCache,
-    },
-  };
 }
 
 export async function buildPurdueCatalog(): Promise<PurdueCatalogResponse> {

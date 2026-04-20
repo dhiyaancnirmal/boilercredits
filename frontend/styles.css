@@ -47,6 +47,10 @@ html {
   outline-offset: 2px;
 }
 
+:where(a, button, input, select).filter-select:focus-visible {
+  outline: none;
+}
+
 .scroll-top-btn {
   position: fixed;
   bottom: 24px;
@@ -359,6 +363,7 @@ select:focus {
 .filter-select:focus {
   border-color: var(--border-focus);
   color: var(--accent-hover);
+  outline: none;
 }
 
 .filter-select:hover {
@@ -1163,6 +1168,65 @@ select:disabled,
   font-size: 0.82rem;
 }
 
+.changelog-page {
+  width: min(640px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 8px 0 16px;
+}
+
+.changelog-title {
+  font-size: clamp(1.75rem, 2.4vw, 2.2rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.changelog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.changelog-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.changelog-entry-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.changelog-version {
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.changelog-date {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.changelog-changes {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.changelog-changes li {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
 .footer {
   border-top: 1px solid var(--border);
   background: var(--bg);
@@ -1210,6 +1274,14 @@ select:disabled,
 
 .footer-links a:hover {
   color: var(--text-secondary);
+}
+
+.footer-version {
+  color: var(--text-secondary) !important;
+}
+
+.footer-version:hover {
+  color: var(--text) !important;
 }
 
 .github-link {

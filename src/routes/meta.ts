@@ -3,7 +3,6 @@ import type { Context } from "hono";
 import type {
   AppContext,
   SchoolEquivalenciesResponse,
-  SchoolOutboundEquivalenciesResponse,
   PurdueCatalogResponse,
   PurdueCourseEquivalenciesResponse,
   PurdueDestination,
@@ -45,8 +44,6 @@ import {
   purdueSchoolsQuerySchema,
   allSchoolsQuerySchema,
   schoolEquivalenciesQuerySchema,
-  schoolOutboundEquivalenciesQuerySchema,
-  purdueCatalogQuerySchema,
   purdueCourseDirectoryQuerySchema,
   purdueCourseEquivalenciesQuerySchema,
 } from "../lib/validators";
@@ -59,10 +56,7 @@ import {
 } from "../lib/refresh";
 import {
   buildSchoolEquivalencies,
-  buildSchoolOutboundEquivalencies,
-  buildOutboundSchoolDirectory,
   buildPurdueCourseDirectory,
-  type OutboundSchoolDirectoryEntry,
   buildPurdueCatalog,
   buildPurdueCourseEquivalencies,
   coercePurdueCourseEquivalenciesResponse,
@@ -96,12 +90,6 @@ function normalizeCachedDestinations(list: PurdueDestination[]): PurdueDestinati
     ...d,
     subregionName: d.subregionName ?? d.state,
   }));
-}
-
-function isCompleteSchoolOutboundResponse(
-  data: SchoolOutboundEquivalenciesResponse | null
-): data is SchoolOutboundEquivalenciesResponse {
-  return !!data && data.counts.coursesMissingCache === 0;
 }
 
 async function getPurdueCourseSummary(
@@ -266,35 +254,16 @@ meta.get("/all-schools", async (c) =>
   })
 );
 
-meta.get("/outbound-schools", async (c) =>
-  handleMetaRequest(c, "outbound-schools", async (headers) => {
-    const cacheKey = makeCacheKey("outbound-schools");
-    const refreshJob = createRefreshJob("outbound-schools", cacheKey, {}, UI_DIRECTORY_TTL_SECONDS);
-    const cached = await getCachedWithMetadata<OutboundSchoolDirectoryEntry[]>(c.env.CACHE, c.env.DB, cacheKey);
-    const cacheHeaders = { ...headers, "X-Cache-Layer": cached.source, "X-Cache-Key": cacheKey };
-    if (cached.data && !cached.stale) return c.json(cached.data, 200, cacheHeaders);
-    if (cached.data && cached.stale && c.env.HYDRATION_QUEUE) {
-      await refreshStaleJob(c, refreshJob);
-      return c.json(cached.data, 200, cacheHeaders);
-    }
-
-    const data = await buildOutboundSchoolDirectory(c.env);
-    await setCache(c.env.CACHE, c.env.DB, cacheKey, data, UI_DIRECTORY_TTL_SECONDS, refreshJob);
-    return c.json(data, 200, { ...cacheHeaders, "X-Cache-Layer": "miss" });
-  })
-);
-
 meta.get("/purdue-course-directory", async (c) =>
   handleMetaRequest(c, "purdue-course-directory", async (headers) => {
     const query = purdueCourseDirectoryQuerySchema.safeParse(c.req.query());
     if (!query.success) return c.json({ error: "Invalid query", details: query.error.issues }, 400);
 
-    const { direction } = query.data;
-    const cacheKey = makeCacheKey("purdue-course-directory", direction, "v4");
+    const cacheKey = makeCacheKey("purdue-course-directory", "v4");
     const refreshJob = createRefreshJob(
       "purdue-course-directory",
       cacheKey,
-      { direction },
+      {},
       UI_DIRECTORY_TTL_SECONDS
     );
     const cached = await getCachedWithMetadata<PurdueCatalogResponse["courses"]>(c.env.CACHE, c.env.DB, cacheKey);
@@ -305,7 +274,7 @@ meta.get("/purdue-course-directory", async (c) =>
       return c.json(cached.data, 200, cacheHeaders);
     }
 
-    const data = await buildPurdueCourseDirectory(c.env, direction);
+    const data = await buildPurdueCourseDirectory(c.env);
     await setCache(c.env.CACHE, c.env.DB, cacheKey, data, UI_DIRECTORY_TTL_SECONDS, refreshJob);
     return c.json(data, 200, { ...cacheHeaders, "X-Cache-Layer": "miss" });
   })
@@ -537,42 +506,6 @@ meta.get("/school-equivalencies", async (c) =>
 
     const data = await buildSchoolEquivalencies(schoolId, state, purdueLocation);
     await setCache(c.env.CACHE, c.env.DB, cacheKey, data, SCHOOL_EQUIVALENCIES_TTL_SECONDS, refreshJob);
-    return c.json(data, 200, { ...cacheHeaders, "X-Cache-Layer": "miss" });
-  })
-);
-
-meta.get("/school-outbound-equivalencies", async (c) =>
-  handleMetaRequest(c, "school-outbound-equivalencies", async (headers) => {
-    const query = schoolOutboundEquivalenciesQuerySchema.safeParse(c.req.query());
-    if (!query.success) return c.json({ error: "Invalid query", details: query.error.issues }, 400);
-
-    const { schoolId, state } = query.data;
-    const purdueLocation = toPurdueSchoolLocationParam(query.data.location);
-    const cacheKey = makeCacheKey("school-outbound-equivalencies", purdueLocation, state, schoolId);
-    const refreshJob = createRefreshJob(
-      "school-outbound-equivalencies",
-      cacheKey,
-      { schoolId, state, location: purdueLocation },
-      SCHOOL_EQUIVALENCIES_TTL_SECONDS
-    );
-    const cached = await getCachedWithMetadata<SchoolOutboundEquivalenciesResponse>(c.env.CACHE, c.env.DB, cacheKey);
-    const cacheHeaders = { ...headers, "X-Cache-Layer": cached.source, "X-Cache-Key": cacheKey };
-    if (isCompleteSchoolOutboundResponse(cached.data) && !cached.stale) {
-      return c.json(cached.data, 200, cacheHeaders);
-    }
-    if (isCompleteSchoolOutboundResponse(cached.data) && cached.stale && c.env.HYDRATION_QUEUE) {
-      await refreshStaleJob(c, refreshJob);
-      return c.json(cached.data, 200, cacheHeaders);
-    }
-
-    const data = await buildSchoolOutboundEquivalencies(schoolId, state, purdueLocation, {
-      CACHE: c.env.CACHE,
-      DB: c.env.DB,
-      HYDRATION_QUEUE: c.env.HYDRATION_QUEUE,
-    });
-    if (data.counts.coursesMissingCache === 0) {
-      await setCache(c.env.CACHE, c.env.DB, cacheKey, data, SCHOOL_EQUIVALENCIES_TTL_SECONDS, refreshJob);
-    }
     return c.json(data, 200, { ...cacheHeaders, "X-Cache-Layer": "miss" });
   })
 );

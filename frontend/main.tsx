@@ -7,15 +7,11 @@ import {
   type Subject,
   type EquivalencyRow,
   type PurdueCatalogCourse,
-  type PurdueDestination,
   type InstitutionSubregion,
   getAllSchools,
-  getOutboundSchools,
   getPurdueCourseDirectory,
-  getPurdueCourseDestinations,
   getPurdueCourseEquivalencies,
   getSchoolEquivalencies,
-  getSchoolOutboundEquivalencies,
 } from "./lib/api";
 import { loadSavedRows, rowKey, saveRows } from "./lib/storage";
 import { normalize, scoreText } from "./lib/fuzzy";
@@ -33,9 +29,7 @@ import {
   type DecodedUndistributed,
 } from "./lib/undistributed-codes";
 
-type Tab = "schools" | "courses" | "saved";
-type CourseDirection = "inbound" | "outbound";
-type SchoolDirection = "inbound" | "outbound";
+type Tab = "schools" | "courses" | "saved" | "changelog";
 
 type ForwardSelection = {
   id: string;
@@ -105,41 +99,44 @@ const PURDUE_SEARCH_HINTS = [
   "CS",
   "Calculus",
 ];
+const APP_VERSION = "v2.0.0";
+const CHANGELOG_ENTRIES = [
+  {
+    version: APP_VERSION,
+    date: "April 19, 2026",
+    changes: [
+      "Initial public launch of BoilerCredits.",
+      "Added school-first and course-first browse flows backed by Purdue's transfer credit equivalency guide.",
+      "Added saved equivalencies, mobile polish, and clearer transfer-credit browsing for Purdue students.",
+    ],
+  },
+];
 
 function starIcon(active: boolean): string {
   return active ? STAR_FILLED : STAR_EMPTY;
 }
 
 // ── URL hash routing ──────────────────────────────────────────────────────────
-// New format:
-//   #schools/in | #schools/out | #schools/in/us/ID/STATE | #schools/out/intl/ID/STATE
-//   Legacy accepted on restore: #schools/in/ID/STATE | #schools/out/ID/STATE
-//   Legacy: #schools/ID/STATE and #schools/ID/STATE/out
-//   #courses/in | #courses/out | #courses/in/SUBJECT/COURSE | #courses/out/SUBJECT/COURSE
-//   #saved
-// Legacy (still parsed on restore; sync effect migrates URL): #forward, #reverse, #purdue-credit
+// Current format:
+//   #schools | #schools/us/ID/STATE | #schools/intl/ID/STATE
+//   #courses | #courses/SUBJECT/COURSE
+//   #saved | #changelog
+// Legacy still parsed on restore (sync effect migrates URL):
+//   #forward, #reverse, #purdue-credit, #schools/in, #schools/out, #courses/in, #courses/out
 
 function parseInitialTab(): Tab {
   const part = window.location.hash.slice(1).split("/")[0];
+  if (part === "changelog") return "changelog";
   if (part === "saved") return "saved";
   if (part === "courses" || part === "reverse" || part === "purdue-credit") return "courses";
   if (part === "schools" || part === "forward") return "schools";
   return "schools";
 }
 
-function parseInitialCourseDirection(): CourseDirection {
-  const parts = window.location.hash.slice(1).split("/");
-  const root = parts[0];
-  if (root === "reverse") return "outbound";
-  if (root === "purdue-credit") return "inbound";
-  if (root === "courses" && parts[1] === "out") return "outbound";
-  return "inbound";
-}
-
 type HashRestore =
-  | { kind: "school"; id: string; state: string; catalog?: SchoolCatalogLocation; schoolDirection?: SchoolDirection }
-  | { kind: "school-browse"; schoolDirection: SchoolDirection }
-  | { kind: "courses"; direction: CourseDirection; subject: string; course: string }
+  | { kind: "school"; id: string; state: string; catalog?: SchoolCatalogLocation }
+  | { kind: "school-browse" }
+  | { kind: "courses"; subject: string; course: string }
   | null;
 
 function schoolCatalogToHashSegment(catalog: SchoolCatalogLocation): "us" | "intl" {
@@ -156,50 +153,33 @@ function parseHashRestore(): HashRestore {
   const parts = window.location.hash.slice(1).split("/");
   const root = parts[0];
   if (root === "schools" || root === "forward") {
-    if (parts[1] === "in" || parts[1] === "out") {
-      const schoolDirection: SchoolDirection = parts[1] === "out" ? "outbound" : "inbound";
-      const catalog = hashSegmentToSchoolCatalog(parts[2]);
-      if (catalog && parts[3] && parts[4]) {
-        return { kind: "school", id: parts[3], state: parts[4], catalog, schoolDirection };
-      }
-      if (parts[2] && parts[3]) {
-        return { kind: "school", id: parts[2], state: parts[3], schoolDirection };
-      }
-      return { kind: "school-browse", schoolDirection };
+    // Legacy: strip in/out direction segment if present.
+    const offset = parts[1] === "in" || parts[1] === "out" ? 1 : 0;
+    const catalogSeg = parts[1 + offset];
+    const catalog = hashSegmentToSchoolCatalog(catalogSeg);
+    if (catalog && parts[2 + offset] && parts[3 + offset]) {
+      return { kind: "school", id: parts[2 + offset], state: parts[3 + offset], catalog };
     }
-    if (parts[1] && parts[2]) {
-      const schoolDirection: SchoolDirection = parts[3] === "out" ? "outbound" : "inbound";
-      return { kind: "school", id: parts[1], state: parts[2], schoolDirection };
+    if (parts[1 + offset] && parts[2 + offset]) {
+      return { kind: "school", id: parts[1 + offset], state: parts[2 + offset] };
     }
+    return { kind: "school-browse" };
   }
   if (root === "reverse" && parts[1] && parts[2])
-    return {
-      kind: "courses",
-      direction: "outbound",
-      subject: parts[1],
-      course: decodeURIComponent(parts[2]),
-    };
+    return { kind: "courses", subject: parts[1], course: decodeURIComponent(parts[2]) };
   if (root === "purdue-credit" && parts[1] && parts[2])
-    return {
-      kind: "courses",
-      direction: "inbound",
-      subject: parts[1],
-      course: decodeURIComponent(parts[2]),
-    };
-  if (root === "courses" && parts[1] === "in" && parts[2] && parts[3])
-    return {
-      kind: "courses",
-      direction: "inbound",
-      subject: parts[2],
-      course: decodeURIComponent(parts[3]),
-    };
-  if (root === "courses" && parts[1] === "out" && parts[2] && parts[3])
-    return {
-      kind: "courses",
-      direction: "outbound",
-      subject: parts[2],
-      course: decodeURIComponent(parts[3]),
-    };
+    return { kind: "courses", subject: parts[1], course: decodeURIComponent(parts[2]) };
+  if (root === "courses") {
+    // Legacy: strip in/out direction segment if present.
+    const offset = parts[1] === "in" || parts[1] === "out" ? 1 : 0;
+    if (parts[1 + offset] && parts[2 + offset]) {
+      return {
+        kind: "courses",
+        subject: parts[1 + offset],
+        course: decodeURIComponent(parts[2 + offset]),
+      };
+    }
+  }
   return null;
 }
 
@@ -207,28 +187,28 @@ function parseHashRestore(): HashRestore {
 function migrateHashToNewFormat(): void {
   const raw = window.location.hash.slice(1);
   if (!raw) return;
+  const p = raw.split("/");
   let newHash: string | null = null;
-  if (raw === "schools") newHash = "schools/in";
-  else if (raw === "forward") newHash = "schools/in";
-  else if (raw.startsWith("forward/")) newHash = `schools/in/${raw.slice("forward/".length)}`;
-  else {
-    const p = raw.split("/");
-    if (
-      p[0] === "schools" &&
-      p[1] &&
-      p[2] &&
-      p[1] !== "in" &&
-      p[1] !== "out"
-    ) {
-      newHash = p[3] === "out" ? `schools/out/${p[1]}/${p[2]}` : `schools/in/${p[1]}/${p[2]}`;
-    } else if (raw === "reverse") newHash = "courses/out";
-    else if (raw.startsWith("reverse/")) {
-      if (p.length >= 3) newHash = `courses/out/${p[1]}/${p.slice(2).join("/")}`;
-    } else if (raw === "purdue-credit") newHash = "courses/in";
-    else if (raw.startsWith("purdue-credit/")) {
-      if (p.length >= 3) newHash = `courses/in/${p[1]}/${p.slice(2).join("/")}`;
-    }
+
+  if (p[0] === "forward") {
+    newHash = p.length > 1 ? `schools/${p.slice(1).join("/")}` : "schools";
+  } else if (p[0] === "reverse" || p[0] === "purdue-credit") {
+    newHash = p.length > 1 ? `courses/${p.slice(1).join("/")}` : "courses";
+  } else if (p[0] === "schools" && (p[1] === "in" || p[1] === "out")) {
+    newHash = p.length > 2 ? `schools/${p.slice(2).join("/")}` : "schools";
+  } else if (p[0] === "courses" && (p[1] === "in" || p[1] === "out")) {
+    newHash = p.length > 2 ? `courses/${p.slice(2).join("/")}` : "courses";
+  } else if (
+    p[0] === "schools" &&
+    p[1] &&
+    p[2] &&
+    p[1] !== "us" &&
+    p[1] !== "intl"
+  ) {
+    // Legacy #schools/ID/STATE[/out] → strip trailing direction.
+    newHash = `schools/${p[1]}/${p[2]}`;
   }
+
   if (newHash !== null && `#${newHash}` !== window.location.hash) {
     history.replaceState(null, "", `#${newHash}`);
   }
@@ -237,33 +217,20 @@ function migrateHashToNewFormat(): void {
 function buildHash(
   tab: Tab,
   selectedSchool: ForwardSelection | null,
-  selectedCourse: PurdueCatalogCourse | null,
-  courseDirection: CourseDirection,
-  schoolDirection: SchoolDirection
+  selectedCourse: PurdueCatalogCourse | null
 ): string {
+  if (tab === "changelog") return "#changelog";
   if (tab === "schools" && selectedSchool) {
-    const seg = schoolDirection === "outbound" ? "out" : "in";
     const catalog = schoolCatalogToHashSegment(selectedSchool.catalog);
-    return `#schools/${seg}/${catalog}/${selectedSchool.id}/${selectedSchool.state}`;
+    return `#schools/${catalog}/${selectedSchool.id}/${selectedSchool.state}`;
   }
   if (tab === "courses" && selectedCourse) {
     const enc = encodeURIComponent(selectedCourse.course);
-    return courseDirection === "inbound"
-      ? `#courses/in/${selectedCourse.subject}/${enc}`
-      : `#courses/out/${selectedCourse.subject}/${enc}`;
+    return `#courses/${selectedCourse.subject}/${enc}`;
   }
-  if (tab === "courses")
-    return courseDirection === "inbound" ? "#courses/in" : "#courses/out";
+  if (tab === "courses") return "#courses";
   if (tab === "saved") return "#saved";
-  if (tab === "schools") return schoolDirection === "outbound" ? "#schools/out" : "";
   return "";
-}
-
-function parseInitialSchoolDirectionFromHash(): SchoolDirection {
-  const r = parseHashRestore();
-  if (r?.kind === "school-browse") return r.schoolDirection;
-  if (r?.kind === "school") return r.schoolDirection ?? "inbound";
-  return "inbound";
 }
 
 function formatCredit(value: string | null | undefined): string {
@@ -272,6 +239,14 @@ function formatCredit(value: string | null | undefined): string {
   if (/^\./.test(credit)) return `0${credit}`;
   if (/^-\./.test(credit)) return `-0${credit.slice(1)}`;
   return credit;
+}
+
+function parseMinCredits(value: string | null | undefined): number {
+  const s = (value ?? "").trim();
+  if (!s || s === "-") return Infinity;
+  const parts = s.split("-");
+  const first = parseFloat(parts[0]);
+  return isNaN(first) ? Infinity : first;
 }
 
 function UndistributedPill({ decoded }: { decoded: DecodedUndistributed }) {
@@ -556,21 +531,43 @@ function SearchHintTicker({
   );
 }
 
+function ChangelogView() {
+  return (
+    <section class="changelog-page" aria-labelledby="changelog-title">
+      <h1 id="changelog-title" class="changelog-title">Changelog</h1>
+      <div class="changelog-list">
+        {CHANGELOG_ENTRIES.map((entry) => (
+          <section key={entry.version} class="changelog-entry">
+            <div class="changelog-entry-head">
+              <span class="changelog-version">{entry.version}</span>
+              <span class="changelog-date">{entry.date}</span>
+            </div>
+            <ul class="changelog-changes">
+              {entry.changes.map((change) => (
+                <li key={change}>{change}</li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Table({
   rows,
   savedKeys,
   onToggleSave,
   loading,
   isMobile,
-  rowFlow = "inbound",
+  preserveOrder = false,
 }: {
   rows: EquivalencyRow[];
   savedKeys: Set<string>;
   onToggleSave: (row: EquivalencyRow) => void;
   loading?: boolean;
   isMobile?: boolean;
-  /** Purdue credit flows into Purdue: gold on Purdue side (right). Outbound flips layout. */
-  rowFlow?: "inbound" | "outbound";
+  preserveOrder?: boolean;
 }) {
   if (!rows.length) {
     if (loading) return null;
@@ -581,13 +578,7 @@ function Table({
     );
   }
 
-  const isOutbound = rowFlow === "outbound";
-  const sorted = [...rows].sort((a, b) => {
-    if (isOutbound) {
-      const aCode = `${a.purdueSubject ?? ""} ${a.purdueCourse ?? ""}`;
-      const bCode = `${b.purdueSubject ?? ""} ${b.purdueCourse ?? ""}`;
-      return aCode.localeCompare(bCode);
-    }
+  const sorted = preserveOrder ? rows : [...rows].sort((a, b) => {
     const aCode = `${a.transferSubject ?? ""} ${a.transferCourse ?? ""}`;
     const bCode = `${b.transferSubject ?? ""} ${b.transferCourse ?? ""}`;
     return aCode.localeCompare(bCode);
@@ -601,21 +592,10 @@ function Table({
           {sorted.map((row) => {
             const key = rowKey(row);
             const active = savedKeys.has(key);
-            const flowClass = isOutbound ? "eq-card-flow-outbound" : "eq-card-flow-inbound";
-            const topLabel = isOutbound ? "Purdue" : "Transfer";
-            const bottomLabel = isOutbound ? "Transfer" : "Purdue";
-            const topSubject = isOutbound ? row.purdueSubject : row.transferSubject;
-            const topCourse = isOutbound ? row.purdueCourse : row.transferCourse;
-            const topTitle = isOutbound ? row.purdueTitle : row.transferTitle;
-            const topCredits = isOutbound ? row.purdueCredits : row.transferCredits;
-            const bottomSubject = isOutbound ? row.transferSubject : row.purdueSubject;
-            const bottomCourse = isOutbound ? row.transferCourse : row.purdueCourse;
-            const bottomTitle = isOutbound ? row.transferTitle : row.purdueTitle;
-            const bottomCredits = isOutbound ? row.transferCredits : row.purdueCredits;
             return (
-              <div class={`eq-card ${flowClass}`} key={key}>
+              <div class="eq-card eq-card-flow-inbound" key={key}>
                 <div class="eq-card-header">
-                  <span class="eq-card-label">{topLabel}</span>
+                  <span class="eq-card-label">Transfer</span>
                   <button
                     class={`icon-btn${active ? " active" : ""}`}
                     type="button"
@@ -625,18 +605,18 @@ function Table({
                   />
                 </div>
                 <div class="eq-card-value">
-                  {topSubject || topCourse
-                    ? renderCourseCode(topSubject, topCourse)
+                  {row.transferSubject || row.transferCourse
+                    ? renderCourseCode(row.transferSubject, row.transferCourse)
                     : <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>{row.transferInstitution || "—"}</span>}
                 </div>
-                {topTitle && <div class="eq-card-detail">{topTitle}</div>}
-                {(topSubject || topCourse) && <div class="eq-card-detail">{formatCredit(topCredits)} credits</div>}
+                {row.transferTitle && <div class="eq-card-detail">{row.transferTitle}</div>}
+                {(row.transferSubject || row.transferCourse) && <div class="eq-card-detail">{formatCredit(row.transferCredits)} credits</div>}
                 <div class="eq-card-arrow">↓</div>
                 <div class="eq-card-purdue">
-                  <span class="eq-card-label">{bottomLabel}</span>
-                  <div class="eq-card-value">{renderCourseCode(bottomSubject, bottomCourse)}</div>
-                  {bottomTitle && <div class="eq-card-detail">{bottomTitle}</div>}
-                  <div class="eq-card-detail">{formatCredit(bottomCredits)} credits</div>
+                  <span class="eq-card-label">Purdue</span>
+                  <div class="eq-card-value">{renderCourseCode(row.purdueSubject, row.purdueCourse)}</div>
+                  {row.purdueTitle && <div class="eq-card-detail">{row.purdueTitle}</div>}
+                  <div class="eq-card-detail">{formatCredit(row.purdueCredits)} credits</div>
                 </div>
               </div>
             );
@@ -653,27 +633,13 @@ function Table({
         <table class="results-table">
           <thead>
             <tr>
-              {isOutbound ? (
-                <>
-                  <th class="results-col-purdue-course">Purdue Course</th>
-                  <th class="results-col-purdue-title">Purdue Title</th>
-                  <th class="results-col-credits">Credits</th>
-                  <th class="arrow-col" />
-                  <th class="results-col-transfer-course">Transfer Course</th>
-                  <th class="results-col-transfer-title">Transfer Title</th>
-                  <th class="results-col-credits">Credits</th>
-                </>
-              ) : (
-                <>
-                  <th class="results-col-transfer-course">Transfer Course</th>
-                  <th class="results-col-transfer-title">Transfer Title</th>
-                  <th class="results-col-credits">Credits</th>
-                  <th class="arrow-col" />
-                  <th class="results-col-purdue-course">Purdue Course</th>
-                  <th class="results-col-purdue-title">Purdue Title</th>
-                  <th class="results-col-credits">Credits</th>
-                </>
-              )}
+              <th class="results-col-transfer-course">Transfer Course</th>
+              <th class="results-col-transfer-title">Transfer Title</th>
+              <th class="results-col-credits">Credits</th>
+              <th class="arrow-col" />
+              <th class="results-col-purdue-course">Purdue Course</th>
+              <th class="results-col-purdue-title">Purdue Title</th>
+              <th class="results-col-credits">Credits</th>
               <th class="action-col" />
             </tr>
           </thead>
@@ -681,35 +647,6 @@ function Table({
             {sorted.map((row) => {
               const key = rowKey(row);
               const active = savedKeys.has(key);
-              const saveCell = (
-                <td class="action-col">
-                  <button
-                    class={`icon-btn${active ? " active" : ""}`}
-                    type="button"
-                    aria-label={active ? "Remove" : "Save"}
-                    onClick={() => onToggleSave(row)}
-                    dangerouslySetInnerHTML={{ __html: starIcon(active) }}
-                  />
-                </td>
-              );
-              if (isOutbound) {
-                return (
-                  <tr key={key}>
-                    <td class="results-col-purdue-course">{renderCourseCode(row.purdueSubject, row.purdueCourse)}</td>
-                    <td class="results-col-purdue-title">{renderSingleLineText(row.purdueTitle)}</td>
-                    <td class="results-col-credits">{formatCredit(row.purdueCredits)}</td>
-                    <td class="arrow-col">→</td>
-                    <td class="results-col-transfer-course">
-                      {row.transferSubject || row.transferCourse
-                        ? renderCourseCode(row.transferSubject, row.transferCourse)
-                        : <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>{row.transferInstitution || "—"}</span>}
-                    </td>
-                    <td class="results-col-transfer-title">{renderSingleLineText(row.transferTitle)}</td>
-                    <td class="results-col-credits">{row.transferSubject || row.transferCourse ? formatCredit(row.transferCredits) : "—"}</td>
-                    {saveCell}
-                  </tr>
-                );
-              }
               return (
                 <tr key={key}>
                   <td class="results-col-transfer-course">
@@ -723,7 +660,15 @@ function Table({
                   <td class="results-col-purdue-course">{renderCourseCode(row.purdueSubject, row.purdueCourse)}</td>
                   <td class="results-col-purdue-title">{renderSingleLineText(row.purdueTitle)}</td>
                   <td class="results-col-credits">{formatCredit(row.purdueCredits)}</td>
-                  {saveCell}
+                  <td class="action-col">
+                    <button
+                      class={`icon-btn${active ? " active" : ""}`}
+                      type="button"
+                      aria-label={active ? "Remove" : "Save"}
+                      onClick={() => onToggleSave(row)}
+                      dangerouslySetInnerHTML={{ __html: starIcon(active) }}
+                    />
+                  </td>
                 </tr>
               );
             })}
@@ -742,7 +687,7 @@ function ReverseTable({
   loading,
   error,
   isMobile,
-  rowFlow = "inbound",
+  preserveOrder = false,
 }: {
   rows: EquivalencyRow[];
   savedKeys: Set<string>;
@@ -750,7 +695,7 @@ function ReverseTable({
   loading?: boolean;
   error?: string | null;
   isMobile?: boolean;
-  rowFlow?: "inbound" | "outbound";
+  preserveOrder?: boolean;
 }) {
   if (loading) return null;
   if (error) {
@@ -769,8 +714,7 @@ function ReverseTable({
     );
   }
 
-  // Sort by transferInstitution first, then transferSubject + transferCourse
-  const sorted = [...rows].sort((a, b) => {
+  const sorted = preserveOrder ? rows : [...rows].sort((a, b) => {
     const aInst = (a.transferInstitution ?? "").toLowerCase();
     const bInst = (b.transferInstitution ?? "").toLowerCase();
     if (aInst !== bInst) return aInst.localeCompare(bInst);
@@ -787,9 +731,8 @@ function ReverseTable({
           {sorted.map((row) => {
             const key = rowKey(row);
             const active = savedKeys.has(key);
-            const flowClass = rowFlow === "outbound" ? "eq-card-flow-outbound" : "eq-card-flow-inbound";
             return (
-              <div class={`eq-card ${flowClass}`} key={key}>
+              <div class="eq-card eq-card-flow-inbound" key={key}>
                 <div class="eq-card-header">
                   <span class="eq-card-institution">{row.transferInstitution || "—"}</span>
                   <button
@@ -872,83 +815,6 @@ function ReverseTable({
   );
 }
 
-function DestinationTable({
-  rows,
-  loading,
-  error,
-  isMobile,
-}: {
-  rows: PurdueDestination[];
-  loading?: boolean;
-  error?: string | null;
-  isMobile?: boolean;
-}) {
-  if (loading) return null;
-  if (error) {
-    return (
-      <div class="results-empty">
-        <p style={{ color: "var(--error)" }}>{error}</p>
-      </div>
-    );
-  }
-  if (!rows.length) {
-    return (
-      <div class="results-empty">
-        <p>No transfer destinations found for this course.</p>
-      </div>
-    );
-  }
-
-  const sorted = [...rows].sort(
-    (a, b) => a.name.localeCompare(b.name) || a.state.localeCompare(b.state)
-  );
-
-  if (isMobile) {
-    return (
-      <div class="card-list">
-        {sorted.map((row) => (
-          <div class="eq-card eq-card-flow-outbound" key={`${row.location}:${row.state}:${row.id}`}>
-            <div class="eq-card-header">
-              <span class="eq-card-institution">{row.name}</span>
-            </div>
-            <span class="eq-card-label">Location</span>
-            <div class="eq-card-value">{formatSubregionDisplayLine(row.state, row.subregionName, row.location)}</div>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div class="results-table-wrap">
-      <table class="results-table reverse-table">
-        <thead>
-          <tr>
-            <th>University</th>
-            <th>Location</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((row) => (
-            <tr key={`${row.location}:${row.state}:${row.id}`}>
-              <td>
-                <HoverTooltip
-                  class="hover-tooltip--clamp"
-                  align="start"
-                  tip={<p class="undistributed-popover-body">{row.name}</p>}
-                >
-                  <strong>{row.name}</strong>
-                </HoverTooltip>
-              </td>
-              <td>{formatSubregionDisplayLine(row.state, row.subregionName, row.location)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function WelcomeModal({
   open,
   onClose,
@@ -956,7 +822,7 @@ function WelcomeModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onNavigate: (tab: Tab, options?: { courseDirection?: CourseDirection; schoolDirection?: SchoolDirection }) => void;
+  onNavigate: (tab: Tab) => void;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -1000,38 +866,25 @@ function WelcomeModal({
         </div>
         <div class="welcome-body">
           <p>
-            BoilerCredits helps you answer two questions quickly: what transfers to Purdue, and where Purdue courses transfer out.
+            BoilerCredits helps you answer two questions quickly: what transfers to Purdue, and which classes elsewhere count for a Purdue course.
           </p>
           <ul class="welcome-list">
             <li>
               <strong>Schools</strong> — Start with a school to see what transfers{" "}
-              <a class="welcome-link" href="#schools/in" onClick={(e) => { e.preventDefault(); onClose(); onNavigate("schools", { schoolDirection: "inbound" }); }}>into Purdue</a>
-              {" "}or which Purdue courses transfer there.
+              <a class="welcome-link" href="#schools" onClick={(e) => { e.preventDefault(); onClose(); onNavigate("schools"); }}>into Purdue</a>.
             </li>
             <li>
               <strong>Courses</strong> — Start with a Purdue course to see{" "}
               <a
                 class="welcome-link"
-                href="#courses/in"
+                href="#courses"
                 onClick={(e) => {
                   e.preventDefault();
                   onClose();
-                  onNavigate("courses", { courseDirection: "inbound" });
+                  onNavigate("courses");
                 }}
               >
                 matching classes at other schools
-              </a>{" "}
-              or{" "}
-              <a
-                class="welcome-link"
-                href="#courses/out"
-                onClick={(e) => {
-                  e.preventDefault();
-                  onClose();
-                  onNavigate("courses", { courseDirection: "outbound" });
-                }}
-              >
-                where that course transfers out
               </a>.
             </li>
             <li>
@@ -1057,16 +910,9 @@ function App() {
     () => !localStorage.getItem("bc-welcome-dismissed") && !window.location.hash
   );
   const [tab, setTab] = useState<Tab>(parseInitialTab);
-  const [courseDirection, setCourseDirection] = useState<CourseDirection>(parseInitialCourseDirection);
 
   // — Schools tab state —
   const [allSchools, setAllSchools] = useState<SchoolListRow[]>([]);
-  const [outboundSchools, setOutboundSchools] = useState<SchoolListRow[]>([]);
-  const [schoolDirection, setSchoolDirection] = useState<SchoolDirection>(parseInitialSchoolDirectionFromHash);
-  const [schoolOutboundCounts, setSchoolOutboundCounts] = useState<{
-    catalogCourses: number;
-    coursesWithCache: number;
-  } | null>(null);
   const [schoolQuery, setSchoolQuery] = useState("");
   const [selectedSchool, setSelectedSchool] = useState<ForwardSelection | null>(null);
   const [forwardSubjectFilter, setForwardSubjectFilter] = useState("");
@@ -1074,29 +920,21 @@ function App() {
   const [forwardResults, setForwardResults] = useState<EquivalencyRow[]>([]);
   const [forwardStatus, setForwardStatus] = useState("Fetching universities");
   const [forwardStatusDone, setForwardStatusDone] = useState(false);
-  const [outboundSchoolStatus, setOutboundSchoolStatus] = useState("Fetching outbound schools");
-  const [outboundSchoolStatusDone, setOutboundSchoolStatusDone] = useState(false);
   const [schoolLoading, setSchoolLoading] = useState(false);
   const [forwardTiming, setForwardTiming] = useState<string>("");
 
   // — Courses browse directories —
-  const [inboundPurdueCourses, setInboundPurdueCourses] = useState<PurdueCatalogCourse[]>([]);
-  const [outboundPurdueCourses, setOutboundPurdueCourses] = useState<PurdueCatalogCourse[]>([]);
+  const [purdueCourses, setPurdueCourses] = useState<PurdueCatalogCourse[]>([]);
   const [purdueQuery, setPurdueQuery] = useState("");
   const [reverseSubjectFilter, setReverseSubjectFilter] = useState("");
   const [xcodeFilter, setXcodeFilter] = useState<"all" | "hide" | "only">("hide");
-  const [inboundCourseStatus, setInboundCourseStatus] = useState("Fetching Purdue courses");
-  const [inboundCourseStatusDone, setInboundCourseStatusDone] = useState(false);
-  const [outboundCourseStatus, setOutboundCourseStatus] = useState("Fetching outbound Purdue courses");
-  const [outboundCourseStatusDone, setOutboundCourseStatusDone] = useState(false);
+  const [courseStatus, setCourseStatus] = useState("Fetching Purdue courses");
+  const [courseStatusDone, setCourseStatusDone] = useState(false);
 
-  // — Courses tab: one selected catalog row; direction chooses detail fetch —
+  // — Courses tab: one selected catalog row —
   const [selectedCourse, setSelectedCourse] = useState<PurdueCatalogCourse | null>(null);
 
   const [purdueCreditRowsByCourse, setPurdueCreditRowsByCourse] = useState<Record<string, EquivalencyRow[]>>({});
-  const [purdueDestinationsByCourse, setPurdueDestinationsByCourse] = useState<
-    Record<string, PurdueDestination[]>
-  >({});
   const [purdueCreditInstitutionStates, setPurdueCreditInstitutionStates] = useState<
     Record<string, Record<string, InstitutionSubregion>>
   >({});
@@ -1104,6 +942,7 @@ function App() {
   const [purdueCreditDetailDone, setPurdueCreditDetailDone] = useState(true);
   const [purdueCreditDetailError, setPurdueCreditDetailError] = useState<string | null>(null);
   const [purdueCreditStateFilter, setPurdueCreditStateFilter] = useState("");
+  const [courseSortOrder, setCourseSortOrder] = useState<"none" | "credits-asc" | "credits-desc">("none");
 
   // — Saved state —
   const [savedRows, setSavedRows] = useState<EquivalencyRow[]>(() => loadSavedRows());
@@ -1140,7 +979,7 @@ function App() {
   // changes (so browser back/forward restore previous tab); replaceState for the
   // initial sync and for state changes caused by a popstate event.
   useEffect(() => {
-    const hash = buildHash(tab, selectedSchool, selectedCourse, courseDirection, schoolDirection);
+    const hash = buildHash(tab, selectedSchool, selectedCourse);
     const target = hash || `${window.location.pathname}${window.location.search}`;
     const hashMatches = window.location.hash === hash;
 
@@ -1154,7 +993,7 @@ function App() {
     }
     initialHashSynced.current = true;
     suppressNextHashPush.current = false;
-  }, [tab, selectedSchool, selectedCourse, courseDirection, schoolDirection]);
+  }, [tab, selectedSchool, selectedCourse]);
 
   // Browser back/forward: restore tab + selection from the new URL hash. Set the
   // suppression flag so the sync effect that runs from our setState calls below
@@ -1165,15 +1004,15 @@ function App() {
       const restore = parseHashRestore();
       const parts = window.location.hash.slice(1).split("/");
       const root = parts[0];
-      if (root === "saved") {
+      if (root === "changelog") {
+        setTab("changelog");
+      } else if (root === "saved") {
         setTab("saved");
       } else if (root === "courses") {
         setTab("courses");
-        setCourseDirection(parseInitialCourseDirection());
         if (restore?.kind !== "courses") setSelectedCourse(null);
       } else if (root === "schools" || root === "" || !root) {
         setTab("schools");
-        setSchoolDirection(parseInitialSchoolDirectionFromHash());
         if (restore?.kind !== "school") setSelectedSchool(null);
       }
       if (restore?.kind === "school") {
@@ -1192,7 +1031,6 @@ function App() {
         );
       }
       if (restore?.kind === "courses") {
-        setCourseDirection(restore.direction);
         setSelectedCourse((prev) =>
           prev && prev.subject === restore.subject && prev.course === restore.course
             ? prev
@@ -1214,21 +1052,15 @@ function App() {
     let cancelled = false;
     const slowTimer = window.setTimeout(() => {
       setForwardStatus((prev) => (prev.includes("Still working") ? prev : "Still working — large list"));
-      setOutboundSchoolStatus((prev) =>
-        prev.includes("Still working") ? prev : "Still working — warming outbound school list"
-      );
     }, 5000);
     setForwardStatusDone(false);
     setForwardStatus("Fetching universities");
-    setOutboundSchoolStatusDone(false);
-    setOutboundSchoolStatus("Fetching outbound schools");
 
     void (async () => {
       try {
-        const [usResult, intlResult, outboundResult] = await Promise.allSettled([
+        const [usResult, intlResult] = await Promise.allSettled([
           timedFetch(() => getAllSchools("US")),
           timedFetch(() => getAllSchools("International")),
-          timedFetch(() => getOutboundSchools()),
         ]);
         if (usResult.status !== "fulfilled" || intlResult.status !== "fulfilled") {
           throw new Error("Failed to load school directory");
@@ -1262,25 +1094,8 @@ function App() {
         setForwardTiming(timeLabel);
         setForwardStatus(formatCountStatus("Universities loaded", schools.length, timeLabel));
         setForwardStatusDone(true);
-        if (outboundResult.status === "fulfilled") {
-          const outboundRes = outboundResult.value;
-          setOutboundSchools(
-            [...outboundRes.data].sort((a, b) => a.name.localeCompare(b.name) || a.state.localeCompare(b.state))
-          );
-          const outboundTimeLabel = `${outboundRes.ms}ms`;
-          setOutboundSchoolStatus(
-            formatCountStatus("Outbound schools loaded", outboundRes.data.length, outboundTimeLabel)
-          );
-        } else {
-          setOutboundSchools([]);
-          setOutboundSchoolStatus("Couldn’t load outbound school list");
-        }
-        setOutboundSchoolStatusDone(true);
         const restore = hashRestore.current;
-        if (restore?.kind === "school-browse") {
-          hashRestore.current = null;
-          setSchoolDirection(restore.schoolDirection);
-        }
+        if (restore?.kind === "school-browse") hashRestore.current = null;
         if (restore?.kind === "school") {
           hashRestore.current = null;
           const match = schools.find(
@@ -1296,8 +1111,7 @@ function App() {
                 state: match.state,
                 name: match.name,
                 catalog: match.catalog,
-              },
-              restore.schoolDirection ?? "inbound"
+              }
             );
         }
       } catch {
@@ -1305,8 +1119,6 @@ function App() {
         if (!cancelled) {
           setForwardStatus(API_UNREACHABLE_HINT);
           setForwardStatusDone(true);
-          setOutboundSchoolStatus(API_UNREACHABLE_HINT);
-          setOutboundSchoolStatusDone(true);
         }
       }
     })();
@@ -1319,11 +1131,8 @@ function App() {
 
   // Filtered + ranked school list
   const filteredSchools = useMemo(() => {
-    return searchSchoolsCombined(
-      schoolDirection === "outbound" ? outboundSchools : allSchools,
-      schoolQuery
-    );
-  }, [allSchools, outboundSchools, schoolDirection, schoolQuery]);
+    return searchSchoolsCombined(allSchools, schoolQuery);
+  }, [allSchools, schoolQuery]);
 
   const groupedSchools = useMemo<SchoolDirectoryGroup[]>(() => {
     const us = filteredSchools
@@ -1339,59 +1148,28 @@ function App() {
     ].filter((group) => group.schools.length);
   }, [filteredSchools]);
 
-  const currentSchoolDirectory = schoolDirection === "outbound" ? outboundSchools : allSchools;
-  const schoolBrowseStatus =
-    schoolDirection === "outbound" ? outboundSchoolStatus : forwardStatus;
-  const schoolBrowseStatusDone =
-    schoolDirection === "outbound" ? outboundSchoolStatusDone : forwardStatusDone;
-
   // Purdue course directories — load when first visiting Courses tab
   useEffect(() => {
     if (tab !== "courses" || reverseLoadStarted.current) return;
     reverseLoadStarted.current = true;
     void (async () => {
       const slowTimer = window.setTimeout(() => {
-        setInboundCourseStatus((prev) => (prev.includes("Still working") ? prev : "Still working — large catalog"));
-        setOutboundCourseStatus((prev) =>
-          prev.includes("Still working") ? prev : "Still working — warming outbound course list"
-        );
+        setCourseStatus((prev) => (prev.includes("Still working") ? prev : "Still working — large catalog"));
       }, 5000);
       try {
-        setInboundCourseStatusDone(false);
-        setInboundCourseStatus("Fetching Purdue courses");
-        setOutboundCourseStatusDone(false);
-        setOutboundCourseStatus("Fetching outbound Purdue courses");
-
-        const [inboundResult, outboundResult] = await Promise.allSettled([
-          timedFetch(() => getPurdueCourseDirectory("inbound")),
-          timedFetch(() => getPurdueCourseDirectory("outbound")),
-        ]);
+        setCourseStatusDone(false);
+        setCourseStatus("Fetching Purdue courses");
+        const { data, ms } = await timedFetch(() => getPurdueCourseDirectory());
         window.clearTimeout(slowTimer);
-        if (inboundResult.status !== "fulfilled" || outboundResult.status !== "fulfilled") {
-          throw new Error("Failed to load Purdue course directories");
-        }
-
-        const inboundRes = inboundResult.value;
-        const outboundRes = outboundResult.value;
-        setInboundPurdueCourses(inboundRes.data);
-        setOutboundPurdueCourses(outboundRes.data);
-
-        const inboundTimeLabel = inboundRes.ms >= 1000 ? `${(inboundRes.ms / 1000).toFixed(1)}s` : `${inboundRes.ms}ms`;
-        const outboundTimeLabel = outboundRes.ms >= 1000 ? `${(outboundRes.ms / 1000).toFixed(1)}s` : `${outboundRes.ms}ms`;
-
-        setInboundCourseStatus(formatCountStatus("Courses loaded", inboundRes.data.length, inboundTimeLabel));
-        setInboundCourseStatusDone(true);
-        setOutboundCourseStatus(
-          formatCountStatus("Outbound courses loaded", outboundRes.data.length, outboundTimeLabel)
-        );
-        setOutboundCourseStatusDone(true);
+        setPurdueCourses(data);
+        const timeLabel = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+        setCourseStatus(formatCountStatus("Courses loaded", data.length, timeLabel));
+        setCourseStatusDone(true);
 
         const restore = hashRestore.current;
         if (restore?.kind === "courses") {
           hashRestore.current = null;
-          setCourseDirection(restore.direction);
-          const source = restore.direction === "outbound" ? outboundRes.data : inboundRes.data;
-          const match = source.find((c) => c.subject === restore.subject && c.course === restore.course);
+          const match = data.find((c) => c.subject === restore.subject && c.course === restore.course);
           const course = match ?? {
             subject: restore.subject,
             course: restore.course,
@@ -1399,39 +1177,25 @@ function App() {
           };
           setSelectedCourse(course);
           setPurdueCreditStateFilter("");
-          if (restore.direction === "outbound") {
-            void ensurePurdueCourseDestinationsLoaded(course.subject, course.course);
-          } else {
-            void ensurePurdueCourseEquivalenciesLoaded(course.subject, course.course);
-          }
+          void ensurePurdueCourseEquivalenciesLoaded(course.subject, course.course);
         }
       } catch {
         window.clearTimeout(slowTimer);
-        setInboundCourseStatus(API_UNREACHABLE_HINT);
-        setInboundCourseStatusDone(true);
-        setOutboundCourseStatus(API_UNREACHABLE_HINT);
-        setOutboundCourseStatusDone(true);
+        setCourseStatus(API_UNREACHABLE_HINT);
+        setCourseStatusDone(true);
       }
     })();
   }, [tab]);
-
-
-  const currentPurdueCourseDirectory =
-    courseDirection === "outbound" ? outboundPurdueCourses : inboundPurdueCourses;
-  const courseBrowseStatus =
-    courseDirection === "outbound" ? outboundCourseStatus : inboundCourseStatus;
-  const courseBrowseStatusDone =
-    courseDirection === "outbound" ? outboundCourseStatusDone : inboundCourseStatusDone;
 
   // Filtered Purdue course list — custom scorer to avoid substring matches in titles
   // (e.g. "cs" matching "Physics" because "physics".includes("cs"))
   const filteredPurdueCourses = useMemo(() => {
     const q = normalize(purdueQuery);
-    if (!q) return currentPurdueCourseDirectory;
+    if (!q) return purdueCourses;
 
     const qTokens = q.split(/\s+/).filter(Boolean);
 
-    const scored = currentPurdueCourseDirectory.map((course) => {
+    const scored = purdueCourses.map((course) => {
       // Score the subject+code with full substring matching (strong signal)
       const codeCandidate = `${course.subject} ${course.course}`;
       const codeScore = scoreText(q, codeCandidate);
@@ -1457,7 +1221,7 @@ function App() {
           `${a.course.subject} ${a.course.course}`.localeCompare(`${b.course.subject} ${b.course.course}`)
       )
       .map((e) => e.course);
-  }, [currentPurdueCourseDirectory, purdueQuery]);
+  }, [purdueCourses, purdueQuery]);
 
   const displayCourses = useMemo(() => {
     return filteredPurdueCourses.filter((c) => {
@@ -1470,67 +1234,43 @@ function App() {
   }, [filteredPurdueCourses, reverseSubjectFilter, xcodeFilter]);
 
   const reverseCatalogDisplayStatus = useMemo(() => {
-    if (!courseBrowseStatusDone) return courseBrowseStatus;
-    const timeMatch = courseBrowseStatus.match(/\(([^)]+)\)$/);
+    if (!courseStatusDone) return courseStatus;
+    const timeMatch = courseStatus.match(/\(([^)]+)\)$/);
     const timeLabel = timeMatch ? timeMatch[1] : "";
     const visible = displayCourses.length;
-    const total = currentPurdueCourseDirectory.length;
+    const total = purdueCourses.length;
     if (visible !== total) {
       return `Courses shown: ${visible} of ${total} (${timeLabel})`;
     }
     return `Courses loaded: ${total} (${timeLabel})`;
-  }, [courseBrowseStatus, courseBrowseStatusDone, displayCourses.length, currentPurdueCourseDirectory.length]);
+  }, [courseStatus, courseStatusDone, displayCourses.length, purdueCourses.length]);
 
   const forwardSubjects = useMemo(() => {
-    if (schoolDirection === "outbound") {
-      return [...new Set(forwardResults.map((row) => row.purdueSubject).filter(Boolean))].sort();
-    }
     return [...new Set(forwardResults.map((row) => row.transferSubject).filter(Boolean))].sort();
-  }, [forwardResults, schoolDirection]);
+  }, [forwardResults]);
 
   const displayForwardRows = useMemo(() => {
     if (!forwardSubjectFilter) return forwardResults;
-    if (schoolDirection === "outbound") {
-      return forwardResults.filter((row) => row.purdueSubject === forwardSubjectFilter);
-    }
     return forwardResults.filter((row) => row.transferSubject === forwardSubjectFilter);
-  }, [forwardResults, forwardSubjectFilter, schoolDirection]);
+  }, [forwardResults, forwardSubjectFilter]);
 
   const forwardDisplayStatus = useMemo(() => {
     if (!forwardStatusDone) return forwardStatus;
     if (forwardStatus.toLowerCase().includes("no equivalencies found")) return forwardStatus;
-    if (schoolDirection === "outbound" && schoolOutboundCounts) {
-      const shown =
-        forwardSubjectFilter && displayForwardRows.length !== forwardResults.length
-          ? `${displayForwardRows.length} of ${forwardResults.length}`
-          : `${displayForwardRows.length}`;
-      return `Equivalencies shown: ${shown}, courses with reverse data: ${schoolOutboundCounts.coursesWithCache} of ${schoolOutboundCounts.catalogCourses} (${forwardTiming})`;
-    }
     if (forwardSubjectFilter && displayForwardRows.length !== forwardResults.length) {
       return `Equivalencies shown: ${displayForwardRows.length} of ${forwardResults.length} (${forwardTiming})`;
     }
     return forwardStatus;
-  }, [
-    forwardStatus,
-    forwardStatusDone,
-    forwardSubjectFilter,
-    displayForwardRows.length,
-    forwardResults.length,
-    forwardTiming,
-    schoolDirection,
-    schoolOutboundCounts,
-  ]);
+  }, [forwardStatus, forwardStatusDone, forwardSubjectFilter, displayForwardRows.length, forwardResults.length, forwardTiming]);
 
-  async function loadSchoolEquivalencies(selection: ForwardSelection, direction: SchoolDirection) {
+  async function loadSchoolEquivalencies(selection: ForwardSelection) {
     forwardAbort.current?.abort();
     const controller = new AbortController();
     forwardAbort.current = controller;
 
-    setSchoolDirection(direction);
     setSelectedSchool(selection);
     setForwardResults([]);
     setSubjects([]);
-    setSchoolOutboundCounts(null);
     setSchoolLoading(true);
     setForwardStatus("Fetching equivalencies");
     setForwardStatusDone(false);
@@ -1541,46 +1281,22 @@ function App() {
     }, 5000);
 
     try {
-      if (direction === "inbound") {
-        const { data, ms } = await timedFetch(() =>
-          getSchoolEquivalencies(selection.id, selection.state, selection.catalog)
-        );
-        window.clearTimeout(slowTimer);
-        if (controller.signal.aborted) return;
+      const { data, ms } = await timedFetch(() =>
+        getSchoolEquivalencies(selection.id, selection.state, selection.catalog)
+      );
+      window.clearTimeout(slowTimer);
+      if (controller.signal.aborted) return;
 
-        setSubjects(data.subjects);
-        setSchoolOutboundCounts(null);
-        setForwardResults(data.rows);
+      setSubjects(data.subjects);
+      setForwardResults(data.rows);
 
-        const timeLabel = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-        setForwardTiming(timeLabel);
-        setForwardStatus(
-          data.rows.length
-            ? formatCountStatus("Equivalencies found", data.rows.length, timeLabel)
-            : `No equivalencies found (${timeLabel})`
-        );
-      } else {
-        const { data, ms } = await timedFetch(() =>
-          getSchoolOutboundEquivalencies(selection.id, selection.state, selection.catalog)
-        );
-        window.clearTimeout(slowTimer);
-        if (controller.signal.aborted) return;
-
-        setSubjects([]);
-        setSchoolOutboundCounts({
-          catalogCourses: data.counts.catalogCourses,
-          coursesWithCache: data.counts.coursesWithCache,
-        });
-        setForwardResults(data.rows);
-
-        const timeLabel = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-        setForwardTiming(timeLabel);
-        setForwardStatus(
-          data.rows.length
-            ? formatCountStatus("Equivalencies found", data.rows.length, timeLabel)
-            : `No equivalencies found (${timeLabel})`
-        );
-      }
+      const timeLabel = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+      setForwardTiming(timeLabel);
+      setForwardStatus(
+        data.rows.length
+          ? formatCountStatus("Equivalencies found", data.rows.length, timeLabel)
+          : `No equivalencies found (${timeLabel})`
+      );
       setForwardStatusDone(true);
     } catch (error) {
       window.clearTimeout(slowTimer);
@@ -1640,68 +1356,14 @@ function App() {
     }
   }
 
-  async function ensurePurdueCourseDestinationsLoaded(subject: string, course: string) {
-    const key = `${subject}:${course}`;
-    const cacheStart = performance.now();
-
-    const cached = purdueDestinationsByCourse[key];
-    if (cached) {
-      const cachedMs = Math.max(1, Math.round(performance.now() - cacheStart));
-      setPurdueCreditDetailError(null);
-      setPurdueCreditDetailStatus(
-        formatCountStatus("Destinations found", cached.length, `${cachedMs}ms`)
-      );
-      setPurdueCreditDetailDone(true);
-      return;
-    }
-
-    try {
-      setPurdueCreditDetailStatus("Fetching destinations");
-      setPurdueCreditDetailError(null);
-      setPurdueCreditDetailDone(false);
-      const { data, ms } = await timedFetch(() => getPurdueCourseDestinations(subject, course));
-
-      setPurdueDestinationsByCourse((current) => ({ ...current, [key]: data }));
-
-      const timeLabel = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-      setPurdueCreditDetailStatus(
-        formatCountStatus("Destinations found", data.length, timeLabel)
-      );
-      setPurdueCreditDetailDone(true);
-    } catch (error) {
-      console.warn("Course destination fetch failed", key, error);
-      setPurdueCreditDetailError(API_UNREACHABLE_HINT);
-      setPurdueCreditDetailStatus(API_UNREACHABLE_HINT);
-      setPurdueCreditDetailDone(true);
-    }
-  }
-
   const selectedCourseKey = selectedCourse ? `${selectedCourse.subject}:${selectedCourse.course}` : null;
 
   const currentReverseRows = selectedCourseKey ? (purdueCreditRowsByCourse[selectedCourseKey] ?? null) : null;
-  const currentDestinations = selectedCourseKey
-    ? (purdueDestinationsByCourse[selectedCourseKey] ?? null)
-    : null;
   const currentInstitutionStates = selectedCourseKey
     ? (purdueCreditInstitutionStates[selectedCourseKey] ?? null)
     : null;
 
   const availablePurdueCreditSubregions = useMemo((): SubregionOption[] => {
-    if (courseDirection === "outbound") {
-      if (!currentDestinations) return [];
-      const byCode = new Map<string, { label: string; location: string }>();
-      for (const dest of currentDestinations) {
-        if (!byCode.has(dest.state)) {
-          byCode.set(dest.state, {
-            label: dest.subregionName || dest.state,
-            location: dest.location,
-          });
-        }
-      }
-      return [...byCode.entries()]
-        .map(([code, meta]) => ({ code, label: meta.label, location: meta.location }))
-        .sort((a, b) => a.label.localeCompare(b.label));
-    }
     if (!currentInstitutionStates) return [];
     const byCode = new Map<string, { label: string; location: string }>();
     for (const v of Object.values(currentInstitutionStates)) {
@@ -1712,28 +1374,28 @@ function App() {
     return [...byCode.entries()]
       .map(([code, meta]) => ({ code, label: meta.label, location: meta.location }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [courseDirection, currentDestinations, currentInstitutionStates]);
+  }, [currentInstitutionStates]);
 
   const filteredReverseRows = useMemo(() => {
-    if (courseDirection === "outbound") return [];
     if (!currentReverseRows) return [];
     if (!purdueCreditStateFilter) return currentReverseRows;
     return currentReverseRows.filter(
       (row) => currentInstitutionStates?.[row.transferInstitution]?.code === purdueCreditStateFilter
     );
-  }, [courseDirection, currentReverseRows, purdueCreditStateFilter, currentInstitutionStates]);
+  }, [currentReverseRows, purdueCreditStateFilter, currentInstitutionStates]);
 
-  const filteredDestinations = useMemo(() => {
-    if (courseDirection !== "outbound") return [];
-    if (!currentDestinations) return [];
-    if (!purdueCreditStateFilter) return currentDestinations;
-    return currentDestinations.filter((dest) => dest.state === purdueCreditStateFilter);
-  }, [courseDirection, currentDestinations, purdueCreditStateFilter]);
+  const sortedReverseRows = useMemo(() => {
+    if (courseSortOrder === "none" || filteredReverseRows.length <= 1) return filteredReverseRows;
+    return [...filteredReverseRows].sort((a, b) => {
+      const aC = parseMinCredits(a.transferCredits);
+      const bC = parseMinCredits(b.transferCredits);
+      return courseSortOrder === "credits-asc" ? aC - bC : bC - aC;
+    });
+  }, [filteredReverseRows, courseSortOrder]);
 
   function handleBackForward() {
     forwardAbort.current?.abort();
     setSelectedSchool(null);
-    setSchoolOutboundCounts(null);
     setForwardResults([]);
     setForwardSubjectFilter("");
     setSchoolQuery("");
@@ -1742,30 +1404,12 @@ function App() {
     setSchoolLoading(false);
   }
 
-  function onSchoolDirectionChange(next: SchoolDirection) {
-    setSchoolDirection(next);
-    if (!selectedSchool) return;
-    setForwardSubjectFilter("");
-    void loadSchoolEquivalencies(selectedSchool, next);
-  }
-
   function handleBackCourses() {
     setSelectedCourse(null);
     setPurdueCreditStateFilter("");
     setPurdueCreditDetailStatus("");
     setPurdueCreditDetailError(null);
     setPurdueCreditDetailDone(true);
-  }
-
-  function onCourseDirectionChange(next: CourseDirection) {
-    setCourseDirection(next);
-    if (!selectedCourse) return;
-    setPurdueCreditStateFilter("");
-    if (next === "outbound") {
-      void ensurePurdueCourseDestinationsLoaded(selectedCourse.subject, selectedCourse.course);
-      return;
-    }
-    void ensurePurdueCourseEquivalenciesLoaded(selectedCourse.subject, selectedCourse.course);
   }
 
   function dismissWelcome() {
@@ -1778,11 +1422,7 @@ function App() {
       <WelcomeModal
         open={showWelcome}
         onClose={dismissWelcome}
-        onNavigate={(t, opts) => {
-          setTab(t);
-          if (opts?.courseDirection) setCourseDirection(opts.courseDirection);
-          if (opts?.schoolDirection) setSchoolDirection(opts.schoolDirection);
-        }}
+        onNavigate={(t) => setTab(t)}
       />
       <header class="header" role="banner">
         <div class="container header-inner">
@@ -1815,43 +1455,28 @@ function App() {
 
       <main class="main">
         <div class="container">
-          <div class="direction-toggle" role="tablist" aria-label="Browse mode">
-            <button id="tab-schools" class={`direction-btn${tab === "schools" ? " active" : ""}`} type="button" onClick={() => setTab("schools")} role="tab" aria-selected={tab === "schools"} aria-controls="panel-schools">
-              Schools
-            </button>
-            <button id="tab-courses" class={`direction-btn${tab === "courses" ? " active" : ""}`} type="button" onClick={() => setTab("courses")} role="tab" aria-selected={tab === "courses"} aria-controls="panel-courses">
-              Courses
-            </button>
-            <button id="tab-saved" class={`direction-btn${tab === "saved" ? " active" : ""}`} type="button" onClick={() => setTab("saved")} role="tab" aria-selected={tab === "saved"} aria-controls="panel-saved">
-              Saved
-            </button>
-          </div>
+          {tab !== "changelog" && (
+            <div class="direction-toggle" role="tablist" aria-label="Browse mode">
+              <button id="tab-schools" class={`direction-btn${tab === "schools" ? " active" : ""}`} type="button" onClick={() => setTab("schools")} role="tab" aria-selected={tab === "schools"} aria-controls="panel-schools">
+                Schools
+              </button>
+              <button id="tab-courses" class={`direction-btn${tab === "courses" ? " active" : ""}`} type="button" onClick={() => setTab("courses")} role="tab" aria-selected={tab === "courses"} aria-controls="panel-courses">
+                Courses
+              </button>
+              <button id="tab-saved" class={`direction-btn${tab === "saved" ? " active" : ""}`} type="button" onClick={() => setTab("saved")} role="tab" aria-selected={tab === "saved"} aria-controls="panel-saved">
+                Saved
+              </button>
+            </div>
+          )}
+
+          {tab === "changelog" && <ChangelogView />}
 
           {/* ── SCHOOLS ── */}
           {tab === "schools" && (
             <section id="panel-schools" class="browse-panel" role="tabpanel" aria-labelledby="tab-schools">
-              <div class="course-mode-toggle" role="group" aria-label="What to look up for this transfer school">
-                <button
-                  type="button"
-                  class={schoolDirection === "inbound" ? "active" : ""}
-                  aria-pressed={schoolDirection === "inbound"}
-                  onClick={() => onSchoolDirectionChange("inbound")}
-                >
-                  Where can I take it?
-                </button>
-                <button
-                  type="button"
-                  class={schoolDirection === "outbound" ? "active" : ""}
-                  aria-pressed={schoolDirection === "outbound"}
-                  onClick={() => onSchoolDirectionChange("outbound")}
-                >
-                  Where does it transfer?
-                </button>
-              </div>
-
               {selectedSchool ? (
                 <>
-                  <div class={`selected-school course-flow-${schoolDirection}`}>
+                  <div class="selected-school course-flow-inbound">
                     <button class="back-btn" type="button" aria-label="Back" onClick={handleBackForward}>
                       {BACK_ICON}
                     </button>
@@ -1866,11 +1491,7 @@ function App() {
                     <StatusPill status={forwardDisplayStatus} loading={!forwardStatusDone} />
                     <select
                       class="filter-select filter-select--compact"
-                      aria-label={
-                        schoolDirection === "outbound"
-                          ? "Filter equivalencies by Purdue subject"
-                          : "Filter transfer equivalencies by subject"
-                      }
+                      aria-label="Filter transfer equivalencies by subject"
                       value={forwardSubjectFilter}
                       onChange={(e) => setForwardSubjectFilter((e.currentTarget as HTMLSelectElement).value)}
                     >
@@ -1886,7 +1507,6 @@ function App() {
                     onToggleSave={toggleSave}
                     loading={schoolLoading}
                     isMobile={isMobile}
-                    rowFlow={schoolDirection === "outbound" ? "outbound" : "inbound"}
                   />
                 </>
               ) : (
@@ -1919,17 +1539,15 @@ function App() {
                     <StatusPill
                       status={
                         schoolQuery
-                          ? `Universities shown: ${filteredSchools.length} of ${currentSchoolDirectory.length}`
-                          : schoolBrowseStatus
+                          ? `Universities shown: ${filteredSchools.length} of ${allSchools.length}`
+                          : forwardStatus
                       }
-                      loading={!schoolBrowseStatusDone && !schoolQuery}
+                      loading={!forwardStatusDone && !schoolQuery}
                     />
                   </div>
 
                   <p class="courses-outbound-hint">
-                    {schoolDirection === "inbound"
-                      ? "Pick a school to see which of its classes transfer to Purdue for credit."
-                      : "Pick a school to see which Purdue classes transfer there for credit."}
+                    Pick a school to see which of its classes transfer to Purdue for credit.
                   </p>
 
                   <div class="browse-school-list" role="listbox">
@@ -1955,8 +1573,7 @@ function App() {
                                       state: school.state,
                                       name: school.name,
                                       catalog: school.catalog,
-                                    },
-                                    schoolDirection
+                                    }
                                   )
                                 }
                               >
@@ -1983,28 +1600,9 @@ function App() {
           {/* ── COURSES ── */}
           {tab === "courses" && (
             <section id="panel-courses" class="browse-panel" role="tabpanel" aria-labelledby="tab-courses">
-              <div class="course-mode-toggle" role="group" aria-label="What to look up for this Purdue course">
-                <button
-                  type="button"
-                  class={courseDirection === "inbound" ? "active" : ""}
-                  aria-pressed={courseDirection === "inbound"}
-                  onClick={() => onCourseDirectionChange("inbound")}
-                >
-                  Where can I take it?
-                </button>
-                <button
-                  type="button"
-                  class={courseDirection === "outbound" ? "active" : ""}
-                  aria-pressed={courseDirection === "outbound"}
-                  onClick={() => onCourseDirectionChange("outbound")}
-                >
-                  Where does it transfer?
-                </button>
-              </div>
-
               {selectedCourse ? (
                 <>
-                  <div class={`selected-school course-flow-${courseDirection}`}>
+                  <div class="selected-school course-flow-inbound">
                     <button class="back-btn" type="button" aria-label="Back" onClick={handleBackCourses}>
                       {BACK_ICON}
                     </button>
@@ -2043,27 +1641,30 @@ function App() {
                           )}
                         </span>
                       )}
+                      {sortedReverseRows.length > 1 && (
+                        <select
+                          class="filter-select filter-select--compact"
+                          aria-label="Sort equivalencies"
+                          value={courseSortOrder}
+                          onChange={(e) => setCourseSortOrder((e.currentTarget as HTMLSelectElement).value as "none" | "credits-asc" | "credits-desc")}
+                        >
+                          <option value="none">Sort by</option>
+                          <option value="credits-asc">Credits: low to high</option>
+                          <option value="credits-desc">Credits: high to low</option>
+                        </select>
+                      )}
                     </div>
                   </div>
                   <div class="course-detail">
-                    {courseDirection === "outbound" ? (
-                      <DestinationTable
-                        rows={filteredDestinations}
-                        loading={!purdueCreditDetailDone}
-                        error={purdueCreditDetailError}
-                        isMobile={isMobile}
-                      />
-                    ) : (
-                      <ReverseTable
-                        rows={filteredReverseRows}
-                        savedKeys={savedKeys}
-                        onToggleSave={toggleSave}
-                        loading={!purdueCreditDetailDone}
-                        error={purdueCreditDetailError}
-                        isMobile={isMobile}
-                        rowFlow="inbound"
-                      />
-                    )}
+                    <ReverseTable
+                      rows={sortedReverseRows}
+                      savedKeys={savedKeys}
+                      onToggleSave={toggleSave}
+                      loading={!purdueCreditDetailDone}
+                      error={purdueCreditDetailError}
+                      isMobile={isMobile}
+                      preserveOrder={courseSortOrder !== "none"}
+                    />
                   </div>
                 </>
               ) : (
@@ -2093,7 +1694,7 @@ function App() {
                   </div>
 
                   <div class="browse-meta">
-                    <StatusPill status={reverseCatalogDisplayStatus} loading={!courseBrowseStatusDone} />
+                    <StatusPill status={reverseCatalogDisplayStatus} loading={!courseStatusDone} />
                     <div class="browse-controls">
                       <HoverTooltip
                         class="hover-tooltip--block"
@@ -2132,9 +1733,7 @@ function App() {
                   </div>
 
                   <p class="courses-outbound-hint">
-                    {courseDirection === "inbound"
-                      ? "Pick a Purdue course to see classes elsewhere that transfer in for credit."
-                      : "Pick a Purdue course to see schools where it transfers for credit."}
+                    Pick a Purdue course to see classes elsewhere that transfer in for credit.
                   </p>
 
                   <div class="purdue-course-list">
@@ -2153,11 +1752,7 @@ function App() {
                               onClick={() => {
                                 setSelectedCourse(course);
                                 setPurdueCreditStateFilter("");
-                                if (courseDirection === "outbound") {
-                                  void ensurePurdueCourseDestinationsLoaded(course.subject, course.course);
-                                } else {
-                                  void ensurePurdueCourseEquivalenciesLoaded(course.subject, course.course);
-                                }
+                                void ensurePurdueCourseEquivalenciesLoaded(course.subject, course.course);
                               }}
                             >
                               <div>
@@ -2173,7 +1768,7 @@ function App() {
                       })
                     ) : (
                       <div style={{ padding: "16px 4px", color: "var(--text-muted)", fontSize: "0.9rem" }}>
-                        {currentPurdueCourseDirectory.length ? "No matching courses." : "Fetching Purdue courses"}
+                        {purdueCourses.length ? "No matching courses." : "Fetching Purdue courses"}
                       </div>
                     )}
                   </div>
@@ -2192,7 +1787,7 @@ function App() {
                 </button>
               </div>
               {savedRows.length ? (
-                <Table rows={savedRows} savedKeys={savedKeys} onToggleSave={toggleSave} isMobile={isMobile} rowFlow="inbound" />
+                <Table rows={savedRows} savedKeys={savedKeys} onToggleSave={toggleSave} isMobile={isMobile} />
               ) : (
                 <div class="results-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "64px 20px", gap: "16px" }}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style={{ width: "48px", height: "48px", color: "var(--border-hover)" }}>
@@ -2223,6 +1818,16 @@ function App() {
           <div class="footer-links">
             <a href="https://dhiyaan.me" target="_blank" rel="noopener">
               dhiyaan.me
+            </a>
+            <a
+              href="#changelog"
+              class="footer-version"
+              onClick={(e) => {
+                e.preventDefault();
+                setTab("changelog");
+              }}
+            >
+              {APP_VERSION}
             </a>
             <a href="https://www.purdue.edu/registrar/currentStudents/Transfer%20Credit.html" target="_blank" rel="noopener">
               Transfer Credit Guide

@@ -92,17 +92,9 @@ export const schoolEquivalenciesQuerySchema = z.object({
   location: locationSchema,
 });
 
-export const schoolOutboundEquivalenciesQuerySchema = z.object({
-  schoolId: z.string().min(1),
-  state: z.string().min(1),
-  location: locationSchema,
-});
-
 export const purdueCatalogQuerySchema = z.object({});
 
-export const purdueCourseDirectoryQuerySchema = z.object({
-  direction: z.enum(["inbound", "outbound"]),
-});
+export const purdueCourseDirectoryQuerySchema = z.object({});
 
 export const purdueCourseEquivalenciesQuerySchema = z.object({
   subject: z.string().min(1),

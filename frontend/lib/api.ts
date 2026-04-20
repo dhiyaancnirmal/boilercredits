@@ -4,10 +4,6 @@ export interface School {
   state: string;
 }
 
-export interface SchoolDirectoryEntry extends School {
-  catalog: "US" | "International";
-}
-
 export interface Subject {
   code: string;
   name: string;
@@ -62,10 +58,6 @@ export function getAllSchools(location = "US"): Promise<School[]> {
   return apiFetch<School[]>(`/api/meta/all-schools?location=${encodeURIComponent(location)}`);
 }
 
-export function getOutboundSchools(): Promise<SchoolDirectoryEntry[]> {
-  return apiFetch<SchoolDirectoryEntry[]>("/api/meta/outbound-schools");
-}
-
 export function getSubjects(schoolId: string, state: string, location = "US"): Promise<Subject[]> {
   const params = new URLSearchParams({ schoolId, state, location });
   return apiFetch<Subject[]>(`/api/meta/subjects?${params.toString()}`);
@@ -97,14 +89,6 @@ export interface PurdueCourseEquivalenciesResponse {
   counts: Record<string, number>;
 }
 
-export interface PurdueDestination {
-  location: string;
-  state: string;
-  subregionName: string;
-  id: string;
-  name: string;
-}
-
 export interface SchoolEquivalenciesResponse {
   school: School;
   subjects: Subject[];
@@ -112,34 +96,17 @@ export interface SchoolEquivalenciesResponse {
   counts: Record<string, number>;
 }
 
-export interface SchoolOutboundEquivalenciesResponse {
-  school: School;
-  rows: EquivalencyRow[];
-  counts: {
-    equivalencies: number;
-    catalogCourses: number;
-    coursesWithCache: number;
-    coursesMissingCache: number;
-  };
-}
-
 export function getPurdueCatalog(): Promise<PurdueCatalogResponse> {
   return apiFetch<PurdueCatalogResponse>("/api/meta/purdue-catalog");
 }
 
-export function getPurdueCourseDirectory(direction: "inbound" | "outbound"): Promise<PurdueCatalogCourse[]> {
-  const params = new URLSearchParams({ direction });
-  return apiFetch<PurdueCatalogCourse[]>(`/api/meta/purdue-course-directory?${params.toString()}`);
+export function getPurdueCourseDirectory(): Promise<PurdueCatalogCourse[]> {
+  return apiFetch<PurdueCatalogCourse[]>("/api/meta/purdue-course-directory");
 }
 
 export function getPurdueCourseEquivalencies(subject: string, course: string): Promise<PurdueCourseEquivalenciesResponse> {
   const params = new URLSearchParams({ subject, course });
   return apiFetch<PurdueCourseEquivalenciesResponse>(`/api/meta/purdue-course-equivalencies?${params.toString()}`);
-}
-
-export function getPurdueCourseDestinations(subject: string, course: string): Promise<PurdueDestination[]> {
-  const params = new URLSearchParams({ subject, course });
-  return apiFetch<PurdueDestination[]>(`/api/meta/purdue-course-destinations?${params.toString()}`);
 }
 
 export function searchEquivalencies(rows: EquivalencySearchRow[]): Promise<EquivalencySearchResponse> {
@@ -155,15 +122,4 @@ export function searchEquivalencies(rows: EquivalencySearchRow[]): Promise<Equiv
 export function getSchoolEquivalencies(schoolId: string, state: string, location = "US"): Promise<SchoolEquivalenciesResponse> {
   const params = new URLSearchParams({ schoolId, state, location });
   return apiFetch<SchoolEquivalenciesResponse>(`/api/meta/school-equivalencies?${params.toString()}`);
-}
-
-export function getSchoolOutboundEquivalencies(
-  schoolId: string,
-  state: string,
-  location = "US"
-): Promise<SchoolOutboundEquivalenciesResponse> {
-  const params = new URLSearchParams({ schoolId, state, location });
-  return apiFetch<SchoolOutboundEquivalenciesResponse>(
-    `/api/meta/school-outbound-equivalencies?${params.toString()}`
-  );
 }

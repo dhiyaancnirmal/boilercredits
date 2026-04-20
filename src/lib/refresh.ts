@@ -18,8 +18,6 @@ import { getCached, makeCacheKey, setCache } from "./cache";
 import { coercePayloadLocationToPurdue, PURDUE_INTL_SCHOOL_BUCKET } from "./purdue-location";
 import {
   buildSchoolEquivalencies,
-  buildSchoolOutboundEquivalencies,
-  buildOutboundSchoolDirectory,
   buildPurdueCatalog,
   buildPurdueCourseDirectory,
   buildPurdueCourseEquivalencies,
@@ -28,26 +26,14 @@ import {
 
 type RefreshPayload = Record<string, string>;
 
-/**
- * These heavy rotating caches must stay valid longer than a full cron cycle.
- * With ~2967 schools and 15-minute ticks, the current seed slices need ~37h
- * to cycle inbound school results and ~49.5h to cycle outbound school results.
- * A 24h TTL guarantees cold misses even after the graph is "fully" warmed once.
- */
 export const LONG_ROTATION_TTL_SECONDS = 72 * 60 * 60;
 export const SCHOOL_EQUIVALENCIES_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
 export const PURDUE_COURSE_DESTINATIONS_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
 export const UI_DIRECTORY_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
 
-/**
- * Rotating cron-seed slice sizes per 15-min tick. Sized so the full
- * catalog + full school list cycle within ~1-2 days, keeping per-tick
- * upstream load moderate.
- */
 const SEED_SLICE = {
   schoolInbound: 20,
   courseReverse: 25,
-  schoolOutbound: 15,
   courseDestinations: 20,
 } as const;
 
@@ -96,18 +82,6 @@ export async function materializeRefreshJob(env: Env, job: RefreshJob): Promise<
   const payload = job.payload;
 
   switch (job.kind) {
-    case "outbound-schools": {
-      const data = await buildOutboundSchoolDirectory(env);
-      await setCache(
-        env.CACHE,
-        env.DB,
-        job.cacheKey,
-        data,
-        ttl,
-        createRefreshJob("outbound-schools", job.cacheKey, payload, ttl)
-      );
-      return;
-    }
     case "all-schools": {
       const location = coercePayloadLocationToPurdue(pick(payload, "location"));
       const states = parseStates(await fetchStates(location));
@@ -156,15 +130,14 @@ export async function materializeRefreshJob(env: Env, job: RefreshJob): Promise<
       return;
     }
     case "purdue-course-directory": {
-      const direction = pick(payload, "direction") as "inbound" | "outbound";
-      const data = await buildPurdueCourseDirectory(env, direction);
+      const data = await buildPurdueCourseDirectory(env);
       await setCache(
         env.CACHE,
         env.DB,
         job.cacheKey,
         data,
         ttl,
-        createRefreshJob("purdue-course-directory", job.cacheKey, { direction }, ttl)
+        createRefreshJob("purdue-course-directory", job.cacheKey, {}, ttl)
       );
       return;
     }
@@ -267,28 +240,6 @@ export async function materializeRefreshJob(env: Env, job: RefreshJob): Promise<
       await setCache(env.CACHE, env.DB, job.cacheKey, data, ttl, createRefreshJob("purdue-course-equivalencies", job.cacheKey, payload, ttl));
       return;
     }
-    case "school-outbound-equivalencies": {
-      const schoolId = pick(payload, "schoolId");
-      const state = pick(payload, "state");
-      const location = coercePayloadLocationToPurdue(pick(payload, "location"));
-      const data = await buildSchoolOutboundEquivalencies(schoolId, state, location, {
-        CACHE: env.CACHE,
-        DB: env.DB,
-        HYDRATION_QUEUE: env.HYDRATION_QUEUE,
-      });
-      if (data.counts.coursesMissingCache !== 0) {
-        return;
-      }
-      await setCache(
-        env.CACHE,
-        env.DB,
-        job.cacheKey,
-        data,
-        ttl,
-        createRefreshJob("school-outbound-equivalencies", job.cacheKey, payload, ttl)
-      );
-      return;
-    }
     default:
       throw new Error(`Unsupported refresh kind: ${(job as RefreshJob).kind}`);
   }
@@ -333,11 +284,9 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
   const enqueued = {
     catalog: 0,
     allSchools: 0,
-    outboundSchools: 0,
     courseDirectories: 0,
     schoolInbound: 0,
     courseReverse: 0,
-    schoolOutbound: 0,
     courseDestinations: 0,
   };
 
@@ -364,15 +313,6 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
     }
   }
 
-  if (
-    await enqueueIfStale(
-      env,
-      createRefreshJob("outbound-schools", makeCacheKey("outbound-schools"), {}, UI_DIRECTORY_TTL_SECONDS)
-    )
-  ) {
-    enqueued.outboundSchools++;
-  }
-
   // 3. Rotating slice of the full catalog for reverse destinations (cheap — feeds step 4).
   const catalog = await getCached<PurdueCatalogResponse>(
     env.CACHE,
@@ -381,21 +321,19 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
   );
 
   if (catalog && catalog.courses.length > 0) {
-    for (const direction of ["inbound", "outbound"] as const) {
-      const cacheKey = makeCacheKey("purdue-course-directory", direction, "v4");
-      if (
-        await enqueueIfStale(
-          env,
-          createRefreshJob(
-            "purdue-course-directory",
-            cacheKey,
-            { direction },
-            UI_DIRECTORY_TTL_SECONDS
-          )
+    const directoryCacheKey = makeCacheKey("purdue-course-directory", "v4");
+    if (
+      await enqueueIfStale(
+        env,
+        createRefreshJob(
+          "purdue-course-directory",
+          directoryCacheKey,
+          {},
+          UI_DIRECTORY_TTL_SECONDS
         )
-      ) {
-        enqueued.courseDirectories++;
-      }
+      )
+    ) {
+      enqueued.courseDirectories++;
     }
 
     const destSlice = rotatingSlice(catalog.courses, tick, SEED_SLICE.courseDestinations);
@@ -416,8 +354,8 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
       }
     }
 
-    // 4. Rotating slice for purdue-course-equivalencies — the building block for
-    // school-outbound aggregation. This is the most important new seed.
+    // 4. Rotating slice for purdue-course-equivalencies — this feeds the
+    // course directory and course-detail browse views.
     const reverseSlice = rotatingSlice(catalog.courses, tick, SEED_SLICE.courseReverse);
     for (const { subject, course } of reverseSlice) {
       const cacheKey = makeCacheKey("purdue-course-equivalencies", subject, course);
@@ -433,8 +371,6 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
   }
 
   // 5. Rotating slice of all schools for school-equivalencies (inbound).
-  // 6. Rotating slice for school-outbound (offset by half the list so outbound
-  //    starts on schools whose course-equivalency dependencies had more time to warm).
   const schools = await getAllSchoolsForSeeding(env);
   if (schools.length > 0) {
     const inboundSlice = rotatingSlice(schools, tick, SEED_SLICE.schoolInbound);
@@ -452,30 +388,6 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
         )
       ) {
         enqueued.schoolInbound++;
-      }
-    }
-
-    const outboundOffset = tick + Math.floor(schools.length / 2);
-    const outboundSlice = rotatingSlice(schools, outboundOffset, SEED_SLICE.schoolOutbound);
-    for (const school of outboundSlice) {
-      const cacheKey = makeCacheKey(
-        "school-outbound-equivalencies",
-        school.location,
-        school.state,
-        school.id
-      );
-      if (
-        await enqueueIfStale(
-          env,
-          createRefreshJob(
-            "school-outbound-equivalencies",
-            cacheKey,
-            { schoolId: school.id, state: school.state, location: school.location },
-            SCHOOL_EQUIVALENCIES_TTL_SECONDS
-          )
-        )
-      ) {
-        enqueued.schoolOutbound++;
       }
     }
   }

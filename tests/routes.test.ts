@@ -193,25 +193,25 @@ describe("Worker routes", () => {
       });
     });
 
-    it("does not cache incomplete school-outbound aggregates as fresh hits", async () => {
+    it("GET /api/meta/purdue-course-directory returns 200 with courses backed by cached equivalencies", async () => {
       const kv = createFakeKV();
-      const request = new Request(
-        "http://localhost/api/meta/school-outbound-equivalencies?schoolId=001816&state=IN&location=US"
+
+      await kv.put(
+        "cache:purdue-course-directory:v4",
+        JSON.stringify({
+          data: [{ subject: "ENG", course: "111", title: "Composition I" }],
+          expiresAt: Date.now() + 60_000,
+        })
       );
 
-      const first = await app.fetch(request, { CACHE: kv });
-      expect(first.status).toBe(200);
-      expect(first.headers.get("X-Cache-Layer")).toBe("miss");
-
-      const firstBody = await first.json();
-      expect(firstBody.counts.coursesMissingCache).toBeGreaterThan(0);
-
-      const second = await app.fetch(
-        new Request("http://localhost/api/meta/school-outbound-equivalencies?schoolId=001816&state=IN&location=US"),
+      const res = await app.fetch(
+        new Request("http://localhost/api/meta/purdue-course-directory"),
         { CACHE: kv }
       );
-      expect(second.status).toBe(200);
-      expect(second.headers.get("X-Cache-Layer")).toBe("miss");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([
+        { subject: "ENG", course: "111", title: "Composition I" },
+      ]);
     });
 
     it("returns X-Cache-Layer and X-Cache-Key headers on aggregated endpoints", async () => {
