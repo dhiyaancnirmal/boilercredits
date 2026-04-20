@@ -19,7 +19,9 @@ import { coercePayloadLocationToPurdue, PURDUE_INTL_SCHOOL_BUCKET } from "./purd
 import {
   buildSchoolEquivalencies,
   buildSchoolOutboundEquivalencies,
+  buildOutboundSchoolDirectory,
   buildPurdueCatalog,
+  buildPurdueCourseDirectory,
   buildPurdueCourseEquivalencies,
   getPurdueCourseDestinations,
 } from "../services/materialized-browse";
@@ -35,6 +37,7 @@ type RefreshPayload = Record<string, string>;
 export const LONG_ROTATION_TTL_SECONDS = 72 * 60 * 60;
 export const SCHOOL_EQUIVALENCIES_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
 export const PURDUE_COURSE_DESTINATIONS_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
+export const UI_DIRECTORY_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
 
 /**
  * Rotating cron-seed slice sizes per 15-min tick. Sized so the full
@@ -93,6 +96,18 @@ export async function materializeRefreshJob(env: Env, job: RefreshJob): Promise<
   const payload = job.payload;
 
   switch (job.kind) {
+    case "outbound-schools": {
+      const data = await buildOutboundSchoolDirectory(env);
+      await setCache(
+        env.CACHE,
+        env.DB,
+        job.cacheKey,
+        data,
+        ttl,
+        createRefreshJob("outbound-schools", job.cacheKey, payload, ttl)
+      );
+      return;
+    }
     case "all-schools": {
       const location = coercePayloadLocationToPurdue(pick(payload, "location"));
       const states = parseStates(await fetchStates(location));
@@ -138,6 +153,19 @@ export async function materializeRefreshJob(env: Env, job: RefreshJob): Promise<
       const schoolId = pick(payload, "schoolId");
       const subject = pick(payload, "subject");
       await setCache(env.CACHE, env.DB, job.cacheKey, parseCourses(await fetchCourses(schoolId, subject)), ttl, createRefreshJob("courses", job.cacheKey, payload, ttl));
+      return;
+    }
+    case "purdue-course-directory": {
+      const direction = pick(payload, "direction") as "inbound" | "outbound";
+      const data = await buildPurdueCourseDirectory(env, direction);
+      await setCache(
+        env.CACHE,
+        env.DB,
+        job.cacheKey,
+        data,
+        ttl,
+        createRefreshJob("purdue-course-directory", job.cacheKey, { direction }, ttl)
+      );
       return;
     }
     case "purdue-courses": {
@@ -305,6 +333,8 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
   const enqueued = {
     catalog: 0,
     allSchools: 0,
+    outboundSchools: 0,
+    courseDirectories: 0,
     schoolInbound: 0,
     courseReverse: 0,
     schoolOutbound: 0,
@@ -334,6 +364,15 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
     }
   }
 
+  if (
+    await enqueueIfStale(
+      env,
+      createRefreshJob("outbound-schools", makeCacheKey("outbound-schools"), {}, UI_DIRECTORY_TTL_SECONDS)
+    )
+  ) {
+    enqueued.outboundSchools++;
+  }
+
   // 3. Rotating slice of the full catalog for reverse destinations (cheap — feeds step 4).
   const catalog = await getCached<PurdueCatalogResponse>(
     env.CACHE,
@@ -342,6 +381,23 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
   );
 
   if (catalog && catalog.courses.length > 0) {
+    for (const direction of ["inbound", "outbound"] as const) {
+      const cacheKey = makeCacheKey("purdue-course-directory", direction, "v4");
+      if (
+        await enqueueIfStale(
+          env,
+          createRefreshJob(
+            "purdue-course-directory",
+            cacheKey,
+            { direction },
+            UI_DIRECTORY_TTL_SECONDS
+          )
+        )
+      ) {
+        enqueued.courseDirectories++;
+      }
+    }
+
     const destSlice = rotatingSlice(catalog.courses, tick, SEED_SLICE.courseDestinations);
     for (const { subject, course } of destSlice) {
       const destCacheKey = makeCacheKey("purdue-course-destinations", subject, course);

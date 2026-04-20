@@ -55,6 +55,7 @@ import {
   createRefreshJob,
   PURDUE_COURSE_DESTINATIONS_TTL_SECONDS,
   SCHOOL_EQUIVALENCIES_TTL_SECONDS,
+  UI_DIRECTORY_TTL_SECONDS,
 } from "../lib/refresh";
 import {
   buildSchoolEquivalencies,
@@ -268,12 +269,18 @@ meta.get("/all-schools", async (c) =>
 meta.get("/outbound-schools", async (c) =>
   handleMetaRequest(c, "outbound-schools", async (headers) => {
     const cacheKey = makeCacheKey("outbound-schools");
-    const cached = await getCached<OutboundSchoolDirectoryEntry[]>(c.env.CACHE, c.env.DB, cacheKey);
-    if (cached) return c.json(cached, 200, headers);
+    const refreshJob = createRefreshJob("outbound-schools", cacheKey, {}, UI_DIRECTORY_TTL_SECONDS);
+    const cached = await getCachedWithMetadata<OutboundSchoolDirectoryEntry[]>(c.env.CACHE, c.env.DB, cacheKey);
+    const cacheHeaders = { ...headers, "X-Cache-Layer": cached.source, "X-Cache-Key": cacheKey };
+    if (cached.data && !cached.stale) return c.json(cached.data, 200, cacheHeaders);
+    if (cached.data && cached.stale && c.env.HYDRATION_QUEUE) {
+      await refreshStaleJob(c, refreshJob);
+      return c.json(cached.data, 200, cacheHeaders);
+    }
 
     const data = await buildOutboundSchoolDirectory(c.env);
-    await setCache(c.env.CACHE, c.env.DB, cacheKey, data, 900);
-    return c.json(data, 200, headers);
+    await setCache(c.env.CACHE, c.env.DB, cacheKey, data, UI_DIRECTORY_TTL_SECONDS, refreshJob);
+    return c.json(data, 200, { ...cacheHeaders, "X-Cache-Layer": "miss" });
   })
 );
 
@@ -284,12 +291,23 @@ meta.get("/purdue-course-directory", async (c) =>
 
     const { direction } = query.data;
     const cacheKey = makeCacheKey("purdue-course-directory", direction, "v4");
-    const cached = await getCached<PurdueCatalogResponse["courses"]>(c.env.CACHE, c.env.DB, cacheKey);
-    if (cached) return c.json(cached, 200, headers);
+    const refreshJob = createRefreshJob(
+      "purdue-course-directory",
+      cacheKey,
+      { direction },
+      UI_DIRECTORY_TTL_SECONDS
+    );
+    const cached = await getCachedWithMetadata<PurdueCatalogResponse["courses"]>(c.env.CACHE, c.env.DB, cacheKey);
+    const cacheHeaders = { ...headers, "X-Cache-Layer": cached.source, "X-Cache-Key": cacheKey };
+    if (cached.data && !cached.stale) return c.json(cached.data, 200, cacheHeaders);
+    if (cached.data && cached.stale && c.env.HYDRATION_QUEUE) {
+      await refreshStaleJob(c, refreshJob);
+      return c.json(cached.data, 200, cacheHeaders);
+    }
 
     const data = await buildPurdueCourseDirectory(c.env, direction);
-    await setCache(c.env.CACHE, c.env.DB, cacheKey, data, 900);
-    return c.json(data, 200, headers);
+    await setCache(c.env.CACHE, c.env.DB, cacheKey, data, UI_DIRECTORY_TTL_SECONDS, refreshJob);
+    return c.json(data, 200, { ...cacheHeaders, "X-Cache-Layer": "miss" });
   })
 );
 

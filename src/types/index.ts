@@ -43,11 +43,13 @@ export interface EquivalencySearchResult {
 }
 
 export type RefreshKind =
+  | "outbound-schools"
   | "all-schools"
   | "states"
   | "schools"
   | "subjects"
   | "courses"
+  | "purdue-course-directory"
   | "purdue-courses"
   | "purdue-subjects"
   | "purdue-course-list"
