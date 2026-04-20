@@ -26,7 +26,15 @@ import {
 
 type RefreshPayload = Record<string, string>;
 
-export const SCHOOL_EQUIVALENCIES_TTL_SECONDS = 86400;
+/**
+ * These heavy rotating caches must stay valid longer than a full cron cycle.
+ * With ~2967 schools and 15-minute ticks, the current seed slices need ~37h
+ * to cycle inbound school results and ~49.5h to cycle outbound school results.
+ * A 24h TTL guarantees cold misses even after the graph is "fully" warmed once.
+ */
+export const LONG_ROTATION_TTL_SECONDS = 72 * 60 * 60;
+export const SCHOOL_EQUIVALENCIES_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
+export const PURDUE_COURSE_DESTINATIONS_TTL_SECONDS = LONG_ROTATION_TTL_SECONDS;
 
 /**
  * Rotating cron-seed slice sizes per 15-min tick. Sized so the full
@@ -340,7 +348,12 @@ export async function seedWarmMaterializations(env: Env): Promise<void> {
       if (
         await enqueueIfStale(
           env,
-          createRefreshJob("purdue-course-destinations", destCacheKey, { subject, course }, 86400)
+          createRefreshJob(
+            "purdue-course-destinations",
+            destCacheKey,
+            { subject, course },
+            PURDUE_COURSE_DESTINATIONS_TTL_SECONDS
+          )
         )
       ) {
         enqueued.courseDestinations++;
@@ -444,7 +457,7 @@ async function getAllSchoolsForSeeding(
   return buckets.flat();
 }
 
-export async function refreshDueJobs(env: Env, limit = 50): Promise<RefreshJob[]> {
+export async function refreshDueJobs(env: Env, limit = 75): Promise<RefreshJob[]> {
   if (!env.DB || !env.HYDRATION_QUEUE) return [];
 
   const rows = await env.DB

@@ -51,7 +51,11 @@ import {
   purdueCourseEquivalenciesQuerySchema,
 } from "../lib/validators";
 import { log } from "../lib/logger";
-import { createRefreshJob, SCHOOL_EQUIVALENCIES_TTL_SECONDS } from "../lib/refresh";
+import {
+  createRefreshJob,
+  PURDUE_COURSE_DESTINATIONS_TTL_SECONDS,
+  SCHOOL_EQUIVALENCIES_TTL_SECONDS,
+} from "../lib/refresh";
 import {
   buildSchoolEquivalencies,
   buildSchoolOutboundEquivalencies,
@@ -390,7 +394,12 @@ meta.get("/purdue-course-destinations", async (c) =>
 
     const { subject, course } = query.data;
     const cacheKey = makeCacheKey("purdue-course-destinations", subject, course);
-    const refreshJob = createRefreshJob("purdue-course-destinations", cacheKey, { subject, course }, 86400);
+    const refreshJob = createRefreshJob(
+      "purdue-course-destinations",
+      cacheKey,
+      { subject, course },
+      PURDUE_COURSE_DESTINATIONS_TTL_SECONDS
+    );
     const cached = await getCachedWithMetadata<PurdueDestination[]>(c.env.CACHE, c.env.DB, cacheKey);
     const cacheHeaders = { ...headers, "X-Cache-Layer": cached.source, "X-Cache-Key": cacheKey };
     if (cached.data && !cached.stale) {
@@ -402,7 +411,14 @@ meta.get("/purdue-course-destinations", async (c) =>
     }
 
     const destinations = await getPurdueCourseDestinations(subject, course);
-    await setCache(c.env.CACHE, c.env.DB, cacheKey, destinations, 86400, refreshJob);
+    await setCache(
+      c.env.CACHE,
+      c.env.DB,
+      cacheKey,
+      destinations,
+      PURDUE_COURSE_DESTINATIONS_TTL_SECONDS,
+      refreshJob
+    );
     return c.json(destinations, 200, { ...cacheHeaders, "X-Cache-Layer": "miss" });
   })
 );

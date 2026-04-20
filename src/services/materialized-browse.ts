@@ -31,6 +31,7 @@ import {
 } from "./purdue-parser";
 import { getCached, getCachedWithMetadata, setCache, makeCacheKey } from "../lib/cache";
 import { createRefreshJob, dispatchRefreshJobsNow } from "../lib/refresh-job";
+import { PURDUE_COURSE_DESTINATIONS_TTL_SECONDS } from "../lib/refresh";
 import { toPurdueSchoolLocationParam } from "../lib/purdue-location";
 
 function dedupeRows(rows: EquivalencyRow[]): EquivalencyRow[] {
@@ -420,7 +421,12 @@ export async function buildSchoolOutboundEquivalencies(
       coursesMissingCache++;
       pendingJobs.set(
         destKey,
-        createRefreshJob("purdue-course-destinations", destKey, { subject, course }, 86400)
+        createRefreshJob(
+          "purdue-course-destinations",
+          destKey,
+          { subject, course },
+          PURDUE_COURSE_DESTINATIONS_TTL_SECONDS
+        )
       );
     }
 
@@ -664,7 +670,7 @@ export async function buildPurdueCourseEquivalencies(
     // Don't promote an empty destination list for a full day — Purdue upstream
     // may be flaky. A short TTL lets the next request re-crawl quickly.
     if (env) {
-      const ttl = destList.length > 0 ? 86400 : 300;
+      const ttl = destList.length > 0 ? PURDUE_COURSE_DESTINATIONS_TTL_SECONDS : 300;
       await setCache(env.CACHE, env.DB, destCacheKey, destList, ttl);
     }
   }
