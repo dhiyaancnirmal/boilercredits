@@ -1,6 +1,6 @@
 # BoilerCredits
 
-A faster way to search Purdue's transfer credit catalog. Live at [dhiyaan.me/boilercredits](https://www.dhiyaan.me/boilercredits).
+A faster way to search Purdue's transfer credit catalog. Live at [boilercredits.xyz](https://boilercredits.xyz).
 
 ## Stack
 
@@ -21,5 +21,9 @@ Frontend on `localhost:5174`, API on `localhost:8787`.
 ```
 pnpm build && pnpm deploy
 ```
+
+Custom domains:
+- `boilercredits.xyz`
+- `www.boilercredits.xyz`
 
 Not affiliated with Purdue University.

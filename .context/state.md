@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-04-18 — confirmed local D1 has only 9 `purdue-course-equivalencies:%` rows (prod has 2046). User's "only 9 courses" UI was local dev, not a bug.
+Last updated: 2026-04-19 — confirmed local D1 has only 9 `purdue-course-equivalencies:%` rows (prod has 2046). User's "only 9 courses" UI was local dev, not a bug.
 
 ## Status: Launched. Top-5 fixes verified on prod. Post-fix sanity pass clean — no real regressions. 3 new churn findings from fresh-eyes agent.
 
@@ -38,6 +38,7 @@ Last updated: 2026-04-18 — confirmed local D1 has only 9 `purdue-course-equiva
 
 ## Recently Completed
 
+- [x] **Repo hygiene (2026-04-19):** Removed agent-only instruction files `AGENTS.md` and `.impeccable.md` from the tracked repo, added them to `.gitignore` so they stay local-only, and updated `README.md` to point at the production domain `boilercredits.xyz`.
 - [x] **Cleanup sweep (2026-04-18):** Added `test-results/`, `.playwright-cli/`, `playwright-report/` to `.gitignore`; hardened `apiFetch` error rendering in `frontend/lib/api.ts` to prefer `body.error` string, fall back to `details[0].message` if present, instead of raw `body.details` array; pruned this state doc; committed `.context/e2e/` audit artifacts as a reference.
 - [x] **Shipped top-5 audit action items to prod (2026-04-18, commit `4c98a98`):**
   1. **P0 security — Origin rate-limit bypass fixed** (`src/lib/rate-limit.ts`). Spoofed `Origin: http://localhost` no longer unlocks unlimited rate-limit budget on prod. Verified: `x-ratelimit-remaining: 59` instead of `9007199254740991`.

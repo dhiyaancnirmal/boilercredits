@@ -11,6 +11,8 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+AGENTS.md
+.impeccable.md
 
 # Build/test artifacts
 coverage/
