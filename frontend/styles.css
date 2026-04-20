@@ -616,7 +616,7 @@ select:focus {
 
 .undistributed-popover {
   position: fixed;
-  z-index: 200;
+  z-index: 400;
 }
 
 .hover-tooltip {

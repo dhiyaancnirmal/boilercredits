@@ -1,4 +1,5 @@
 import { render, type ComponentChildren } from "preact";
+import { createPortal } from "preact/compat";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import "./styles.css";
 import logoUrl from "./logo.svg";
@@ -355,22 +356,25 @@ function UndistributedPill({ decoded }: { decoded: DecodedUndistributed }) {
       >
         {decoded.raw}
       </button>
-      {open && popoverPos && (
-        <div
-          id={popoverId}
-          class="undistributed-popover popover-panel"
-          role="region"
-          aria-label={ariaSummary}
-          style={{ top: `${popoverPos.top}px`, left: `${popoverPos.left}px` }}
-          onMouseEnter={revealPopover}
-          onMouseLeave={scheduleClose}
-        >
-          <p class="undistributed-popover-kicker">{kicker}</p>
-          <p class="undistributed-popover-title">{decoded.headline}</p>
-          <p class="undistributed-popover-body">{decoded.detail}</p>
-          <p class="undistributed-popover-level">{decoded.levelHint}</p>
-        </div>
-      )}
+      {open && popoverPos && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              id={popoverId}
+              class="undistributed-popover popover-panel"
+              role="region"
+              aria-label={ariaSummary}
+              style={{ top: `${popoverPos.top}px`, left: `${popoverPos.left}px` }}
+              onMouseEnter={revealPopover}
+              onMouseLeave={scheduleClose}
+            >
+              <p class="undistributed-popover-kicker">{kicker}</p>
+              <p class="undistributed-popover-title">{decoded.headline}</p>
+              <p class="undistributed-popover-body">{decoded.detail}</p>
+              <p class="undistributed-popover-level">{decoded.levelHint}</p>
+            </div>,
+            document.body,
+          )
+        : null}
     </span>
   );
 }
