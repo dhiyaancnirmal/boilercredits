@@ -13,6 +13,7 @@ dist/
 .vscode/
 AGENTS.md
 .impeccable.md
+.context/
 
 # Build/test artifacts
 coverage/
