@@ -103,6 +103,7 @@ describe("warm materialization seeding", () => {
     expect(refreshJobs.has("purdue-catalog")).toBe(true);
     expect(refreshJobs.has("all-schools:US")).toBe(true);
     expect(refreshJobs.has("all-schools:Outside US")).toBe(true);
+    expect(refreshJobs.has("outbound-schools")).toBe(true);
   });
 
   it("skips global targets that are still fresh and does not enqueue rotations without cached deps", async () => {
@@ -120,6 +121,11 @@ describe("warm materialization seeding", () => {
       updated_at: now,
     });
     materialized.set("all-schools:Outside US", {
+      payload_json: JSON.stringify([]),
+      expires_at: now + 60_000,
+      updated_at: now,
+    });
+    materialized.set("outbound-schools", {
       payload_json: JSON.stringify([]),
       expires_at: now + 60_000,
       updated_at: now,
